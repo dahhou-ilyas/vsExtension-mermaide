@@ -2,6 +2,13 @@ import React from 'react';
 import ReactDOM from 'react-dom/client'; // Utilisez 'react-dom/client' pour React 18+
 
 const YourPanel = () => {
+    const handleClick = () => {
+        const vscode = acquireVsCodeApiss(); // Accédez à l'API de VS Code
+        vscode.postMessage({
+          command: 'alertMessage',  // Commande que l'extension va traiter
+          text: 'Hello from React!'  // Le message ou données à envoyer
+        });
+      };
     return (
         <div className="flex flex-col items-center justify-center h-full space-y-4">
             <h1 className="text-3xl font-bold text-blue-600">Votre UI avec Tailwind CSS</h1>
@@ -11,7 +18,7 @@ const YourPanel = () => {
                 className="border border-gray-300 p-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
                 placeholder="Tapez votre message"
             />
-            <button className="bg-blue-500 text-white p-2 rounded-lg hover:bg-blue-600">
+            <button onClick={handleClick} className="bg-blue-500 text-white p-2 rounded-lg hover:bg-blue-600">
                 Envoyer
             </button>
         </div>

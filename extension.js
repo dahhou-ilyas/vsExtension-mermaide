@@ -11,6 +11,17 @@ function activate(context) {
 				{ enableScripts: true }
 			);
 			panel.webview.html = getWebviewContent(panel,context)
+			panel.webview.onDidReceiveMessage(
+				message => {
+				  switch (message.command) {
+					case 'alertMessage':
+					  vscode.window.showInformationMessage(message.text); // Afficher un message dans VS Code
+					  break;
+				  }
+				},
+				undefined,
+				context.subscriptions
+			  );
 		})
 	);
 }
