@@ -28,6 +28,7 @@ function getWebviewContent(panel, context) {
 	  <head>
 		<meta charset="UTF-8">
 		<title>Extension Panel</title>
+		<script src="https://cdn.tailwindcss.com"></script>
 	  </head>
 	  <body>
 		<div id="root"></div>
