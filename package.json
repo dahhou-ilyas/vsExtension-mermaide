@@ -9,25 +9,53 @@
   "categories": [
     "Other"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onCommand:real-time-performance-profiler.helloWorld"
+  ],
   "main": "./extension.js",
   "contributes": {
-    "commands": [{
-      "command": "real-time-performance-profiler.helloWorld",
-      "title": "Hello World"
-    }]
+    "commands": [
+      {
+        "command": "real-time-performance-profiler.helloWorld",
+        "title": "Hello World"
+      }
+    ],
+    "configuration": {
+      "title": "Your Extension",
+      "properties": {
+        "yourExtension.items": {
+          "type": "array",
+          "default": [],
+          "description": "Liste des éléments de votre extension"
+        }
+      }
+    }
   },
   "scripts": {
     "lint": "eslint .",
     "pretest": "npm run lint",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "build": "webpack --mode production",
+    "watch": "webpack --watch --mode development"
   },
   "devDependencies": {
-    "@types/vscode": "^1.96.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "20.x",
-    "eslint": "^9.16.0",
+    "@types/vscode": "^1.96.0",
     "@vscode/test-cli": "^0.0.10",
-    "@vscode/test-electron": "^2.4.1"
+    "@vscode/test-electron": "^2.4.1",
+    "eslint": "^9.16.0"
+  },
+  "dependencies": {
+    "@babel/core": "^7.26.0",
+    "@babel/preset-env": "^7.26.0",
+    "@babel/preset-react": "^7.26.3",
+    "babel-loader": "^9.2.1",
+    "chart.js": "^4.4.7",
+    "path": "^0.12.7",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "webpack": "^5.97.1",
+    "webpack-cli": "^6.0.1"
   }
 }
