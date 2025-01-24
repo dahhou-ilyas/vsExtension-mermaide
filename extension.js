@@ -1,32 +1,43 @@
 const path = require('path');
 const vscode = require('vscode');
+let generateMistralResponse;
+async function loadModule() {
+    const module = await import('./llm/llm.mjs');
+    generateMistralResponse = module.generateMistralResponse;
+}
 
 function activate(context) {
-	context.subscriptions.push(
-		vscode.commands.registerCommand('real-time-performance-profiler.helloWorld', () => {
-			const panel = vscode.window.createWebviewPanel(
-				'extensionPanel',
-				'Extension Panel',
-				vscode.ViewColumn.One,
-				{ enableScripts: true }
-			);
-			panel.webview.html = getWebviewContent(panel,context)
-			panel.webview.onDidReceiveMessage(
-				message => {
-				  switch (message.command) {
-					case 'alertMessage':
-					  vscode.window.showInformationMessage(message.text); // Afficher un message dans VS Code
-					  break;
-				  }
-				},
-				undefined,
-				context.subscriptions
-			  );
-		})
-	);
+	loadModule().catch(err => {
+        console.error('Failed to load llm module:', err);
+    });
+    context.subscriptions.push(
+        vscode.commands.registerCommand('real-time-performance-profiler.helloWorld', async () => {
+			if (!generateMistralResponse) {
+                vscode.window.showErrorMessage(
+                    'Le module n\'est pas encore chargé. Réessayez dans un instant.'
+                );
+                return;
+            }
+            if (!vscode.window.activeTextEditor) {
+                return; // no editor open
+            }
+
+            const { selection } = vscode.window.activeTextEditor;
+            const selectedText = vscode.window.activeTextEditor.document.getText(selection);
+            
+
+            const response = await generateMistralResponse(selectedText);
+           
+        })
+    );
 }
 
 function deactivate() {}
+
+module.exports = {
+    activate,
+    deactivate
+};
 
 function getWebviewContent(panel, context) {
 	const scriptUri = panel.webview.asWebviewUri(
@@ -48,9 +59,4 @@ function getWebviewContent(panel, context) {
 	  </html>
 	`;
 }
-
-module.exports = {
-	activate,
-	deactivate
-};
 

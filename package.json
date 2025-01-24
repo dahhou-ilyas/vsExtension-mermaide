@@ -3,6 +3,7 @@
   "displayName": "Real-Time-Performance-Profiler",
   "description": "Instant monitoring of code performance",
   "version": "0.0.1",
+  "type": "commonjs",
   "engines": {
     "vscode": "^1.96.0"
   },
@@ -53,6 +54,7 @@
     "@huggingface/inference": "^3.1.2",
     "babel-loader": "^9.2.1",
     "chart.js": "^4.4.7",
+    "dotenv": "^16.4.7",
     "path": "^0.12.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
