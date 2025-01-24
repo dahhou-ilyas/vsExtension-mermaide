@@ -60,3 +60,8 @@ function getWebviewContent(panel, context) {
 	`;
 }
 
+
+const prompt =`Veuillez créer un diagramme de flux Mermaid détaillant l'exécution du code source suivant. Le diagramme doit illustrer les étapes clés de l'exécution, y compris les entrées, les traitements, et la sortie. Assurez-vous que le diagramme inclut les points de décision, les boucles, et les retours si applicable.
+Voici le code source à analyser :
+${code}
+Dans ce diagramme, chaque action doit être représentée par un nœud et les relations entre les actions par des flèches. L'ordre d'exécution doit être clairement défini.`
