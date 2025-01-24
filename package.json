@@ -50,6 +50,7 @@
     "@babel/core": "^7.26.0",
     "@babel/preset-env": "^7.26.0",
     "@babel/preset-react": "^7.26.3",
+    "@huggingface/inference": "^3.1.2",
     "babel-loader": "^9.2.1",
     "chart.js": "^4.4.7",
     "path": "^0.12.7",

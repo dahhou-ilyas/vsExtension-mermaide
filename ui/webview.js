@@ -1,33 +1,45 @@
-import React from 'react';
-import ReactDOM from 'react-dom/client'; // Utilisez 'react-dom/client' pour React 18+
+import React, { useState, useEffect } from 'react';
+import ReactDOM from 'react-dom/client';
 
-const YourPanel = () => {
-    const handleClick = () => {
-        const vscode = acquireVsCodeApiss(); // Accédez à l'API de VS Code
-        vscode.postMessage({
-          command: 'alertMessage',  // Commande que l'extension va traiter
-          text: 'Hello from React!'  // Le message ou données à envoyer
-        });
-      };
-    return (
-        <div className="flex flex-col items-center justify-center h-full space-y-4">
-            <h1 className="text-3xl font-bold text-blue-600">Votre UI avec Tailwind CSS</h1>
-            <p className="text-gray-700">Bienvenue dans votre chat personnalisé !</p>
-            <input 
-                type="text" 
-                className="border border-gray-300 p-2 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Tapez votre message"
-            />
-            <button onClick={handleClick} className="bg-blue-500 text-white p-2 rounded-lg hover:bg-blue-600">
-                Envoyer
-            </button>
+const MistralResponsePanel = () => {
+  const [response, setResponse] = useState([]);
+
+  useEffect(() => {
+    // Listen for messages from VS Code extension
+    const handleMessage = (event) => {
+      const message = event.data;
+      if (message.command === 'mistralResponse') {
+        setResponse(pre=>[...pre,message.text]);
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    
+    return () => {
+      window.removeEventListener('message', handleMessage);
+    };
+  }, []);
+
+  return (
+    <div className="p-4">
+        <h1 className="text-6xl font-bold bg-gradient-to-r from-orange-500 via-orange-400 to-orange-300 text-transparent bg-clip-text w-full text-center">
+          Welcome to your representation
+        </h1>
+
+      {response ? (
+        <div>
+          <h2 className="text-xl font-bold mb-2">Mistral AI Response:</h2>
+          <p className="text-gray-700">{response}</p>
         </div>
-    );
+      ) : (
+        <p className="text-gray-500">Waiting for Mistral AI response...</p>
+      )}
+    </div>
+  );
 };
 
-// Obtenez l'élément racine
 const rootElement = document.getElementById('root');
-
-// Créez un "root" et rendez l'application React
 const root = ReactDOM.createRoot(rootElement);
-root.render(<YourPanel />);
+root.render(<MistralResponsePanel />);
+
+export default MistralResponsePanel;
