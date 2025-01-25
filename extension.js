@@ -40,8 +40,8 @@ function activate(context) {
 				return
 			}
 			
-			const mermidecode = generateMermaidFlow(selectedText)
-			console.log(mermidecode);
+			const mermaide_base64 = Buffer.from(generateMermaidFlow(selectedText)).toString('base64');
+			console.log(mermaide_base64);
 			
 			const panel = vscode.window.createWebviewPanel(
 				'mistralPanel',
@@ -51,7 +51,7 @@ function activate(context) {
 			);
 			panel.webview.postMessage({
 				command: 'mistralResponse',
-				text: mermidecode
+				text: mermaide_base64
 			});
 
 			panel.webview.html=getWebviewContent(panel,context)
