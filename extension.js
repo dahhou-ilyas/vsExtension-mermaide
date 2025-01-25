@@ -1,9 +1,9 @@
 const path = require('path');
 const vscode = require('vscode');
-let generateMistralResponse;
+let generateMermaidFlow;
 async function loadModule() {
-    const module = await import('./llm/llm.mjs');
-    generateMistralResponse = module.generateMistralResponse;
+    const module = await import('./llm/parserJs.mjs');
+    generateMermaidFlow = module.generateMermaidFlow;
 }
 
 function activate(context) {
@@ -12,7 +12,7 @@ function activate(context) {
     });
     context.subscriptions.push(
         vscode.commands.registerCommand('real-time-performance-profiler.helloWorld', async () => {
-			if (!generateMistralResponse) {
+			if (!generateMermaidFlow) {
                 vscode.window.showErrorMessage(
                     'Le module n\'est pas encore chargé. Réessayez dans un instant.'
                 );
@@ -22,47 +22,26 @@ function activate(context) {
                 return; // no editor open
             }
 
-            const { selection } = vscode.window.activeTextEditor;
-            const selectedText = vscode.window.activeTextEditor.document.getText(selection);
+            const editor = vscode.window.activeTextEditor;
+
+			const filePath = editor.document.fileName;
+
+    		const fileExtension = filePath.split('.').pop();
+
+            const selectedText = vscode.window.activeTextEditor.document.getText(editor.selection);
             
 			if (!selectedText) {
+				vscode.window.showInformationMessage('You need to select a function');
 				return
 			}
-			console.log(selectedText);
+
+			if (fileExtension != "js"){
+				vscode.window.showInformationMessage('The code must be JavaScript');
+				return
+			}
 			
-			const prompt = `Generate Mermaid stateDiagram-v2 flowchart for code execution:
-
-Rules:
-- Use stateDiagram-v2 syntax
-- Show key execution states
-- Include start [*] and end [*]
-- Highlight decision points
-- Annotate critical transitions
-
-Template:
-stateDiagram-v2
-    [*] --> FunctionStart
-    FunctionStart --> InputValidation
-    InputValidation --> Decision
-    Decision --> ProcessLogic : Valid Inputs
-    Decision --> ErrorHandling : Invalid Inputs
-    ProcessLogic --> ComputeResult
-    ComputeResult --> ReturnValue
-    ReturnValue --> [*]
-    ErrorHandling --> [*]
-
-Code to analyze:
-${selectedText}
-`;
-
-            const response = await generateMistralResponse(prompt);
-			
-			console.log("--------------------");
-			console.log(response);
-			console.log("--------------------");
-
-			const mermidecode=extractCodeBlocks(response)
-
+			const mermidecode = generateMermaidFlow(selectedText)
+			console.log(mermidecode);
 			
 			const panel = vscode.window.createWebviewPanel(
 				'mistralPanel',
@@ -107,10 +86,4 @@ function getWebviewContent(panel, context) {
 	  </html>
 	`;
 }
-
-function extractCodeBlocks(input) {
-	const regex = /```(\w*)\n([\s\S]*?)```/g;
-	const match = regex.exec(input);
-	return match ? match[2].trim() : '';
- }
 

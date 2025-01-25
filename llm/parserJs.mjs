@@ -1,6 +1,6 @@
-import acorn from "acorn"
+import * as acorn from "acorn"
 
-import walk from "acorn-walk"
+import * as walk from "acorn-walk"
 
 class UltimateJSFlowParser {
     constructor(code) {
