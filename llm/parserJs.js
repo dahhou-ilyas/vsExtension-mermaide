@@ -10,6 +10,8 @@ class UltimateJSFlowParser {
             nodes: new Set(['[*]']),
             edges: []
         };
+
+        this.result = "x";
     }
 
     parse() {
@@ -46,12 +48,17 @@ class UltimateJSFlowParser {
             },
             
             IfStatement: (node) => {
+                if(node.test.type == "BinaryExpression"){
+                    this.parsBunary(node.test)
+                }
+                console.log(this.result);
+                
                 this.flowGraph.nodes.add('Condition');
                 this.flowGraph.nodes.add('TrueBranch');
                 this.flowGraph.nodes.add('FalseBranch');
                 
                 this.flowGraph.edges.push(
-                    { from: 'FunctionStart', to: 'Condition', label: 'Decision' },
+                    { from: 'FunctionStart', to: 'Condition', label: `Decision (${args})` },
                     { from: 'Condition', to: 'TrueBranch', label: 'Condition True' },
                     { from: 'Condition', to: 'FalseBranch', label: 'Condition False' }
                 );
@@ -111,6 +118,22 @@ class UltimateJSFlowParser {
         });
         
         return diagram;
+    }
+    parsBunary(node){
+        if(node == undefined){
+            return
+        }
+        this.parsBunary(node.left)
+        if(node.type =="Identifier" ){
+            this.result = this.result + node.name
+            return
+        }else if(node.type =="Literal"){
+            this.result = this.result + node.raw
+        }
+        else {
+            this.result = this.result + node.operator
+        }
+        this.parsBunary(node.right)
     }
 }
 
