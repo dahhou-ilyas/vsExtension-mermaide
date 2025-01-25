@@ -8,10 +8,12 @@ class UltimateJSFlowParser {
         this.ast = null;
         this.flowGraph = {
             nodes: new Set(['[*]']),
-            edges: []
+            edges: [],
+            variables: new Map(),
+            functions: [],
+            imports: [],
+            exports: []
         };
-
-        this.result = "x";
     }
 
     parse() {
@@ -20,6 +22,7 @@ class UltimateJSFlowParser {
                 ecmaVersion: 2022,
                 sourceType: 'module'
             });
+            this._extractModuleInfo();
             this._buildFlowGraph();
             return this._generateMermaidDiagram();
         } catch (error) {
@@ -27,11 +30,63 @@ class UltimateJSFlowParser {
         }
     }
 
+    _extractModuleInfo() {
+        walk.simple(this.ast, {
+            VariableDeclaration: (node) => {
+                node.declarations.forEach(decl => {
+                    const varName = decl.id.name;
+                    const varType = this._inferVariableType(decl.init);
+                    this.flowGraph.variables.set(varName, {
+                        type: varType,
+                        value: decl.init ? this._extractNodeValue(decl.init) : null
+                    });
+                });
+            },
+            
+            FunctionDeclaration: (node) => {
+                this.flowGraph.functions.push({
+                    name: node.id ? node.id.name : 'Anonymous',
+                    params: node.params.map(param => param.name),
+                    isAsync: node.async,
+                    isGenerator: node.generator
+                });
+            }
+        });
+    }
+
+    _inferVariableType(node) {
+        if (!node) return 'undefined';
+        switch(node.type) {
+            case 'Literal':
+                return typeof node.value;
+            case 'ArrayExpression':
+                return 'array';
+            case 'ObjectExpression':
+                return 'object';
+            case 'ArrowFunctionExpression':
+            case 'FunctionExpression':
+                return 'function';
+            default:
+                return 'unknown';
+        }
+    }
+
+    _extractNodeValue(node) {
+        if (!node) return null;
+        switch(node.type) {
+            case 'Literal':
+                return node.value;
+            case 'Identifier':
+                return node.name;
+            default:
+                return null;
+        }
+    }
+
     _buildFlowGraph() {
         const nodeTypes = {
             functionStart: 'Function Entry',
             conditionalBranch: 'Conditional Branch',
-            loopStart: 'Loop Entry',
             asyncPoint: 'Async Operation',
             returnPoint: 'Return Point',
             errorHandling: 'Error Handling'
@@ -39,39 +94,24 @@ class UltimateJSFlowParser {
 
         walk.simple(this.ast, {
             Function: (node) => {
-                this.flowGraph.nodes.add('FunctionStart');
+                const funcName = node.id ? node.id.name : 'ProcessData';
+                const functionStartNode = `${funcName}Start`;
+                
+                this.flowGraph.nodes.add(functionStartNode);
                 this.flowGraph.edges.push({
                     from: '[*]', 
-                    to: 'FunctionStart', 
-                    label: nodeTypes.functionStart
+                    to: functionStartNode, 
+                    label: `${nodeTypes.functionStart}`
                 });
             },
             
             IfStatement: (node) => {
-                if(node.test.type == "BinaryExpression"){
-                    this.parsBunary(node.test)
-                }
-                console.log(this.result);
-                
                 this.flowGraph.nodes.add('Condition');
-                this.flowGraph.nodes.add('TrueBranch');
-                this.flowGraph.nodes.add('FalseBranch');
+                this.flowGraph.nodes.add('ErrorHandling');
                 
                 this.flowGraph.edges.push(
-                    { from: 'FunctionStart', to: 'Condition', label: `Decision (${args})` },
-                    { from: 'Condition', to: 'TrueBranch', label: 'Condition True' },
-                    { from: 'Condition', to: 'FalseBranch', label: 'Condition False' }
-                );
-            },
-            
-            ForStatement: (node) => {
-                this.flowGraph.nodes.add('LoopStart');
-                this.flowGraph.nodes.add('LoopBody');
-                
-                this.flowGraph.edges.push(
-                    { from: 'FunctionStart', to: 'LoopStart', label: nodeTypes.loopStart },
-                    { from: 'LoopStart', to: 'LoopBody', label: 'Iteration' },
-                    { from: 'LoopBody', to: 'LoopStart', label: 'Continue Loop' }
+                    { from: 'ProcessDataStart', to: 'Condition', label: 'Check Input' },
+                    { from: 'Condition', to: 'ErrorHandling', label: 'Invalid Input' }
                 );
             },
             
@@ -80,7 +120,7 @@ class UltimateJSFlowParser {
                 this.flowGraph.nodes.add('CatchBlock');
                 
                 this.flowGraph.edges.push(
-                    { from: 'FunctionStart', to: 'TryBlock', label: 'Try Operation' },
+                    { from: 'ProcessDataStart', to: 'TryBlock', label: 'Try Operation' },
                     { from: 'TryBlock', to: 'CatchBlock', label: nodeTypes.errorHandling }
                 );
             },
@@ -89,7 +129,7 @@ class UltimateJSFlowParser {
                 this.flowGraph.nodes.add('ReturnPoint');
                 
                 this.flowGraph.edges.push(
-                    { from: 'TrueBranch', to: 'ReturnPoint', label: nodeTypes.returnPoint },
+                    { from: 'TryBlock', to: 'ReturnPoint', label: nodeTypes.returnPoint },
                     { from: 'ReturnPoint', to: '[*]', label: 'Function Exit' }
                 );
             },
@@ -98,7 +138,7 @@ class UltimateJSFlowParser {
                 this.flowGraph.nodes.add('AsyncOperation');
                 
                 this.flowGraph.edges.push(
-                    { from: 'FunctionStart', to: 'AsyncOperation', label: nodeTypes.asyncPoint }
+                    { from: 'ProcessDataStart', to: 'AsyncOperation', label: nodeTypes.asyncPoint }
                 );
             }
         });
@@ -119,23 +159,8 @@ class UltimateJSFlowParser {
         
         return diagram;
     }
-    parsBunary(node){
-        if(node == undefined){
-            return
-        }
-        this.parsBunary(node.left)
-        if(node.type =="Identifier" ){
-            this.result = this.result + node.name
-            return
-        }else if(node.type =="Literal"){
-            this.result = this.result + node.raw
-        }
-        else {
-            this.result = this.result + node.operator
-        }
-        this.parsBunary(node.right)
-    }
 }
+
 
 export function generateMermaidFlow(code) {
     const parser = new UltimateJSFlowParser(code);
