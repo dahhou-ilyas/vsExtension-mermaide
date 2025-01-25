@@ -11,7 +11,7 @@
     "Other"
   ],
   "activationEvents": [
-    "onCommand:real-time-performance-profiler.helloWorld"
+    "*"
   ],
   "main": "./extension.js",
   "contributes": {
@@ -52,6 +52,8 @@
     "@babel/preset-env": "^7.26.0",
     "@babel/preset-react": "^7.26.3",
     "@huggingface/inference": "^3.1.2",
+    "acorn": "^8.14.0",
+    "acorn-walk": "^8.3.4",
     "babel-loader": "^9.2.1",
     "chart.js": "^4.4.7",
     "dotenv": "^16.4.7",

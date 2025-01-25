@@ -25,9 +25,57 @@ function activate(context) {
             const { selection } = vscode.window.activeTextEditor;
             const selectedText = vscode.window.activeTextEditor.document.getText(selection);
             
+			if (!selectedText) {
+				return
+			}
+			console.log(selectedText);
+			
+			const prompt = `Generate Mermaid stateDiagram-v2 flowchart for code execution:
 
-            const response = await generateMistralResponse(selectedText);
-           
+Rules:
+- Use stateDiagram-v2 syntax
+- Show key execution states
+- Include start [*] and end [*]
+- Highlight decision points
+- Annotate critical transitions
+
+Template:
+stateDiagram-v2
+    [*] --> FunctionStart
+    FunctionStart --> InputValidation
+    InputValidation --> Decision
+    Decision --> ProcessLogic : Valid Inputs
+    Decision --> ErrorHandling : Invalid Inputs
+    ProcessLogic --> ComputeResult
+    ComputeResult --> ReturnValue
+    ReturnValue --> [*]
+    ErrorHandling --> [*]
+
+Code to analyze:
+${selectedText}
+`;
+
+            const response = await generateMistralResponse(prompt);
+			
+			console.log("--------------------");
+			console.log(response);
+			console.log("--------------------");
+
+			const mermidecode=extractCodeBlocks(response)
+
+			
+			const panel = vscode.window.createWebviewPanel(
+				'mistralPanel',
+				'Mistral AI Response',
+				vscode.ViewColumn.One,
+				{ enableScripts: true }
+			);
+			panel.webview.postMessage({
+				command: 'mistralResponse',
+				text: mermidecode
+			});
+
+			panel.webview.html=getWebviewContent(panel,context)
         })
     );
 }
@@ -60,8 +108,9 @@ function getWebviewContent(panel, context) {
 	`;
 }
 
+function extractCodeBlocks(input) {
+	const regex = /```(\w*)\n([\s\S]*?)```/g;
+	const match = regex.exec(input);
+	return match ? match[2].trim() : '';
+ }
 
-const prompt =`Veuillez créer un diagramme de flux Mermaid détaillant l'exécution du code source suivant. Le diagramme doit illustrer les étapes clés de l'exécution, y compris les entrées, les traitements, et la sortie. Assurez-vous que le diagramme inclut les points de décision, les boucles, et les retours si applicable.
-Voici le code source à analyser :
-${code}
-Dans ce diagramme, chaque action doit être représentée par un nœud et les relations entre les actions par des flèches. L'ordre d'exécution doit être clairement défini.`

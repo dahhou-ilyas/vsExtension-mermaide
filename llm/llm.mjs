@@ -11,10 +11,10 @@ async function generateMistralResponse(prompt) {
 
   try {
     const result = await hf.textGeneration({
-      model: 'mistralai/Mistral-7B-Instruct-v0.2',
+      model: 'openai-community/gpt2',
       inputs: prompt,
       parameters: {
-        max_new_tokens: 250,
+        max_new_tokens: 1000,
         temperature: 0.7,
         top_p: 0.9
       }
