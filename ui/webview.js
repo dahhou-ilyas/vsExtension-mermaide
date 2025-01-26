@@ -1,27 +1,45 @@
-const Mermaid = require('./Mermaid');
-const React = require('react');
+const React = require("react");
 const { useState, useEffect } = React;
-const ReactDOM = require('react-dom/client');
-require("./styles.css");
-
+const ReactDOM = require("react-dom/client");
 
 const MistralResponsePanel = () => {
-  const [response, setResponse] = useState([]);
+  const [response, setResponse] = useState([
+    `
+    stateDiagram-v2
+    [*]
+    Condition
+    ErrorHandling
+    depthFirstSearchStart
+    ProcessDataStart --> Condition : Check Input
+    Condition --> ErrorHandling : Invalid Input
+    ProcessDataStart --> Condition : Check Input
+    Condition --> ErrorHandling : Invalid Input
+    [*] --> depthFirstSearchStart : Function Entry
+    `
+  ]);
+  const [MermaidComponent, setMermaidComponent] = useState(null); // Stocke le composant Mermaid importé dynamiquement
 
   useEffect(() => {
+    // Importation dynamique de Mermaid lors du montage du composant
+    const loadMermaid = async () => {
+      const { default: Mermaid } = await import("./Mermaid.mjs");
+      setMermaidComponent(() => Mermaid); // Stocker le composant dans l'état
+    };
+
+    loadMermaid();
+
     const handleMessage = (event) => {
       const message = event.data;
-      if (message.command === 'mistralResponse') {
+      if (message.command === "mistralResponse") {
         const decodedString = atob(message.text);
-        
         setResponse((prev) => [...prev, decodedString]);
       }
     };
 
-    window.addEventListener('message', handleMessage);
+    window.addEventListener("message", handleMessage);
 
     return () => {
-      window.removeEventListener('message', handleMessage);
+      window.removeEventListener("message", handleMessage);
     };
   }, []);
 
@@ -31,128 +49,23 @@ const MistralResponsePanel = () => {
         Welcome to your representation
       </h1>
 
-      <Mermaid chart={`
-classDiagram
-class GeoPointType {
- <<enumeration>>
-  BROWNFIELD
-  OGWELL
-  CELL_TOWER
-  NUCLEAR_REACTOR
-  SUPERFUND
-}
-class GeoPoint {
-  -UUID id
-  +GeoPointType type
-  +GeographyPoint location
-  -UUID metadata references metadata(id)
-  +Datetime createdAt
-}
-class GeographyPoint {
-  <<interface>>
-  +GeoJSON geojson
-  +Int srid
-  +Float longitude
-  +Float latitude
-}
-class NearbyPoint {
- <<Interface>>
-  -UUID id references GeoPoint(id)
-  +GeoPointType GeoPoint::type
-  +GeographyPoint GeoPoint::location
-  +UUID GeoPoint::metadata
-  +Float distance
-}
-class NearbyPoints {
-<<Service>>
-  +GeoJSON origin
-  +Float radiusMi
-  +Int first
-  +Int last
-  +Int offset
-  +Cursor before
-  +Cursor after
-}
-class Hotel {
- -UUID id
-+String name
--Int objectid 
-}
-GeoPoint *-- GeoPointType: Composition
-GeoPoint *-- GeographyPoint: Composition
-GeoPoint "1" <|-- "1" NearbyPoint: Implements
-NearbyPoints "1" -- "0..n"NearbyPoint: Contains
-Hotel "1" -- "1" GeoPoint: May Contain
-    
-    `} />
       {response.length > 0 ? (
         <div>
           <h2 className="text-xl font-bold mb-2">Mistral AI Response:</h2>
           {response.map((res, index) => (
-            <Mermaid chart={`
-classDiagram
-class GeoPointType {
- <<enumeration>>
-  BROWNFIELD
-  OGWELL
-  CELL_TOWER
-  NUCLEAR_REACTOR
-  SUPERFUND
-}
-class GeoPoint {
-  -UUID id
-  +GeoPointType type
-  +GeographyPoint location
-  -UUID metadata references metadata(id)
-  +Datetime createdAt
-}
-class GeographyPoint {
-  <<interface>>
-  +GeoJSON geojson
-  +Int srid
-  +Float longitude
-  +Float latitude
-}
-class NearbyPoint {
- <<Interface>>
-  -UUID id references GeoPoint(id)
-  +GeoPointType GeoPoint::type
-  +GeographyPoint GeoPoint::location
-  +UUID GeoPoint::metadata
-  +Float distance
-}
-class NearbyPoints {
-<<Service>>
-  +GeoJSON origin
-  +Float radiusMi
-  +Int first
-  +Int last
-  +Int offset
-  +Cursor before
-  +Cursor after
-}
-class Hotel {
- -UUID id
-+String name
--Int objectid 
-}
-GeoPoint *-- GeoPointType: Composition
-GeoPoint *-- GeographyPoint: Composition
-GeoPoint "1" <|-- "1" NearbyPoint: Implements
-NearbyPoints "1" -- "0..n"NearbyPoint: Contains
-Hotel "1" -- "1" GeoPoint: May Contain
-    
-    `} />
+            // Rendre le composant Mermaid uniquement après son importation
+            MermaidComponent ? <MermaidComponent key={index} chart={res} /> : <p key={index}>Loading chart...</p>
           ))}
         </div>
       ) : (
         <p className="text-gray-500">Waiting for Mistral AI response...</p>
       )}
+      
     </div>
   );
 };
 
-const rootElement = document.getElementById('root');
+const rootElement = document.getElementById("root");
 const root = ReactDOM.createRoot(rootElement);
 root.render(<MistralResponsePanel />);
 

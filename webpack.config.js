@@ -8,24 +8,28 @@ module.exports = {
     path: path.resolve(__dirname, 'dist'),
   },
   resolve: {
-    extensions: ['.js', '.jsx'], // Ajoutez .jsx pour prendre en charge les fichiers React
+    extensions: ['.js', '.mjs', '.jsx'], // Support des fichiers .js, .mjs et .jsx
+    fullySpecified: false, // Corrige les problèmes liés aux modules ESM
   },
   module: {
     rules: [
       {
-        test: /\.js$|\.jsx$/, // Appliquez cette règle aux fichiers .js et .jsx
+        test: /\.js$|\.jsx$|\.mjs$/, // Gère les fichiers .js, .jsx et .mjs
         exclude: /node_modules/,
         use: {
           loader: 'babel-loader',
           options: {
-            presets: ['@babel/preset-env', '@babel/preset-react'], // Ajoutez les presets pour ES6 et React
+            presets: [
+              '@babel/preset-env', // Support des dernières versions JavaScript
+              '@babel/preset-react', // Support de React
+            ],
           },
         },
       },
       {
-        test: /\.css$/,
-        use: ['style-loader', 'css-loader']
-      }
+        test: /\.css$/, // Gère les fichiers CSS
+        use: ['style-loader', 'css-loader'],
+      },
     ],
   },
 };
