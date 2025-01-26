@@ -41,13 +41,15 @@ function activate(context) {
 			}
 			
 			const mermaide_base64 = Buffer.from(generateMermaidFlow(selectedText)).toString('base64');
-			console.log(mermaide_base64);
+			
 			
 			const panel = vscode.window.createWebviewPanel(
 				'mistralPanel',
 				'Mistral AI Response',
 				vscode.ViewColumn.One,
-				{ enableScripts: true }
+				{ enableScripts: true ,
+					retainContextWhenHidden: true
+				}
 			);
 			panel.webview.postMessage({
 				command: 'mistralResponse',
@@ -55,6 +57,14 @@ function activate(context) {
 			});
 
 			panel.webview.html=getWebviewContent(panel,context)
+
+			panel.onDidChangeViewState((event) => {
+				if (panel.visible) {
+					console.log('Webview is visible');
+				} else {
+					console.log('Webview is no longer visible');
+				}
+			});
         })
     );
 }
@@ -70,8 +80,6 @@ function getWebviewContent(panel, context) {
 	const scriptUri = panel.webview.asWebviewUri(
 		vscode.Uri.file(path.join(context.extensionPath, 'dist', 'webview.js'))
 	);
-
-	console.log(scriptUri);
 
 	return `
 	  <!DOCTYPE html>
