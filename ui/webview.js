@@ -3,20 +3,7 @@ const { useState, useEffect } = React;
 const ReactDOM = require("react-dom/client");
 
 const MistralResponsePanel = () => {
-  const [response, setResponse] = useState([
-    `
-    stateDiagram-v2
-    [*]
-    Condition
-    ErrorHandling
-    depthFirstSearchStart
-    ProcessDataStart --> Condition : Check Input
-    Condition --> ErrorHandling : Invalid Input
-    ProcessDataStart --> Condition : Check Input
-    Condition --> ErrorHandling : Invalid Input
-    [*] --> depthFirstSearchStart : Function Entry
-    `
-  ]);
+  const [response, setResponse] = useState([]);
   const [MermaidComponent, setMermaidComponent] = useState(null); // Stocke le composant Mermaid importé dynamiquement
 
   useEffect(() => {
