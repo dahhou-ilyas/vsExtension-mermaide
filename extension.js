@@ -7,9 +7,13 @@ async function loadModule() {
 }
 
 function activate(context) {
+	let diagrames = context.workspaceState.get('diagrames', []);
 	loadModule().catch(err => {
         console.error('Failed to load llm module:', err);
     });
+
+	let currentPanel = undefined;
+
     context.subscriptions.push(
         vscode.commands.registerCommand('real-time-performance-profiler.helloWorld', async () => {
 			if (!generateMermaidFlow) {
@@ -39,32 +43,37 @@ function activate(context) {
 				vscode.window.showInformationMessage('The code must be JavaScript');
 				return
 			}
-			
+
+
 			const mermaide_base64 = Buffer.from(generateMermaidFlow(selectedText)).toString('base64');
 			
+			diagrames.push(mermaide_base64);
+
+			const columnToShowIn = vscode.window.activeTextEditor.viewColumn
+
+			if(currentPanel){
+				currentPanel.webview.postMessage({
+					command: 'mistralResponse',
+					text: mermaide_base64
+				});
+				currentPanel.reveal(columnToShowIn);
+			}else{
+				currentPanel = vscode.window.createWebviewPanel(
+					'mistralPanel',
+					'Mistral AI Response',
+					vscode.ViewColumn.One,
+					{ enableScripts: true ,
+						retainContextWhenHidden: true
+					}
+				);
+
+				currentPanel.webview.postMessage({
+					command: 'mistralResponse',
+					text: mermaide_base64
+				});
+				currentPanel.webview.html=getWebviewContent(currentPanel,context)
+			}
 			
-			const panel = vscode.window.createWebviewPanel(
-				'mistralPanel',
-				'Mistral AI Response',
-				vscode.ViewColumn.One,
-				{ enableScripts: true ,
-					retainContextWhenHidden: true
-				}
-			);
-			panel.webview.postMessage({
-				command: 'mistralResponse',
-				text: mermaide_base64
-			});
-
-			panel.webview.html=getWebviewContent(panel,context)
-
-			panel.onDidChangeViewState((event) => {
-				if (panel.visible) {
-					console.log('Webview is visible');
-				} else {
-					console.log('Webview is no longer visible');
-				}
-			});
         })
     );
 }
