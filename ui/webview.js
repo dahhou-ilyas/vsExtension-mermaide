@@ -18,8 +18,16 @@ const MistralResponsePanel = () => {
     const handleMessage = (event) => {
       const message = event.data;
       if (message.command === "mistralResponse") {
-        const decodedString = atob(message.text);
-        setResponse((prev) => [...prev, decodedString]);
+        const mermaideBase64_Liste = message.text.split(",")
+        try{
+          const mermaids = mermaideBase64_Liste.map(atob)
+          
+          setResponse((prev) => [...prev, ...mermaids]);
+        }catch (error) {
+          console.error("Erreur lors du décodage des chaînes Base64 :", error);
+        }
+        
+        
       }
     };
 

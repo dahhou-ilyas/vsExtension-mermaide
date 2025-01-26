@@ -7,7 +7,7 @@ async function loadModule() {
 }
 
 function activate(context) {
-	let diagrames = context.workspaceState.get('diagrames', []);
+	let diagrames = context.workspaceState.get('diagrames', {});
 	loadModule().catch(err => {
         console.error('Failed to load llm module:', err);
     });
@@ -47,7 +47,7 @@ function activate(context) {
 
 			const mermaide_base64 = Buffer.from(generateMermaidFlow(selectedText)).toString('base64');
 			
-			diagrames.push(mermaide_base64);
+			diagrames[mermaide_base64] = "0";
 
 			const columnToShowIn = vscode.window.activeTextEditor.viewColumn
 
@@ -58,6 +58,10 @@ function activate(context) {
 				});
 				currentPanel.reveal(columnToShowIn);
 			}else{
+				let keysString = "" 
+				if(Object.keys(diagrames).length != 0){
+					keysString = Object.keys(diagrames).join(",");;
+				}
 				currentPanel = vscode.window.createWebviewPanel(
 					'mistralPanel',
 					'Mistral AI Response',
@@ -69,11 +73,15 @@ function activate(context) {
 
 				currentPanel.webview.postMessage({
 					command: 'mistralResponse',
-					text: mermaide_base64
+					text: mermaide_base64 + "," + (keysString ? keysString : "")
 				});
 				currentPanel.webview.html=getWebviewContent(currentPanel,context)
 			}
-			
+
+			currentPanel.onDidDispose(()=>{
+				console.log(diagrames);
+				currentPanel = undefined
+			})
         })
     );
 }
