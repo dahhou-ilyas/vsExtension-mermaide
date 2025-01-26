@@ -71,6 +71,8 @@ function getWebviewContent(panel, context) {
 		vscode.Uri.file(path.join(context.extensionPath, 'dist', 'webview.js'))
 	);
 
+	console.log(scriptUri);
+
 	return `
 	  <!DOCTYPE html>
 	  <html>

@@ -45,7 +45,9 @@
     "@types/vscode": "^1.96.0",
     "@vscode/test-cli": "^0.0.10",
     "@vscode/test-electron": "^2.4.1",
-    "eslint": "^9.16.0"
+    "css-loader": "^7.1.2",
+    "eslint": "^9.16.0",
+    "style-loader": "^4.0.0"
   },
   "dependencies": {
     "@babel/core": "^7.26.0",
@@ -57,6 +59,7 @@
     "babel-loader": "^9.2.1",
     "chart.js": "^4.4.7",
     "dotenv": "^16.4.7",
+    "mermaid": "^11.4.1",
     "path": "^0.12.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
