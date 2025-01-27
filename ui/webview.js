@@ -70,7 +70,7 @@ const MistralResponsePanel = () => {
           <h2 className="text-xl font-bold mb-2">Mistral AI Response:</h2>
           {response.map((res, index) => (
             // Rendre le composant Mermaid uniquement après son importation
-            MermaidComponent ? <MermaidComponent key={index} chart={res} /> : <p key={index}>Loading chart...</p>
+            MermaidComponent ? <MermaidComponent key={index} chart={res.mermaid} /> : <p key={index}>Loading chart...</p>
           ))}
         </div>
       ) : (

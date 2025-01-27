@@ -26,7 +26,6 @@ async function handleCommande_genreteFlowDiagrame(webviewManager,generateMermaid
         mermaidBase64:mermaidBase64,
         ...referece
     }
-    
     webviewManager.addDiagram(data);
     webviewManager.createOrUpdatePanel(
         data, 

@@ -17,6 +17,7 @@ class WebviewManager {
     }
 
     updateExistingPanel(data, columnToShowIn) {
+        console.log(data);
         this.currentPanel.webview.postMessage({
             command: 'mistralResponse',
             text: JSON.stringify(data)
@@ -49,7 +50,7 @@ class WebviewManager {
 
     getExistingDiagramValues() {
         return Object.values(this.diagrames).length !== 0
-          ? Object.values(this.diagrames).join(",")
+          ? Object.values(this.diagrames)
           : "";
     }
 
@@ -62,6 +63,7 @@ class WebviewManager {
     // il faut teste si le diagrame déja existe
 
     addDiagram(data) {
+        
         this.diagrames[data.mermaidBase64] = data;
     }
 
