@@ -17,12 +17,8 @@
   "contributes": {
     "commands": [
       {
-        "command": "real-time-performance-profiler.helloWorld",
-        "title": "Hello World"
-      },
-      {
-        "command": "real-time-performance-profiler.reference",
-        "title": "reference"
+        "command": "real-time-performance-profiler.generateFlowChart",
+        "title": "generateFlowChart"
       }
     ],
     "configuration": {
