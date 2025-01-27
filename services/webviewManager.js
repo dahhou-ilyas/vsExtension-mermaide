@@ -17,7 +17,6 @@ class WebviewManager {
     }
 
     updateExistingPanel(data, columnToShowIn) {
-        console.log(data);
         this.currentPanel.webview.postMessage({
             command: 'mistralResponse',
             text: JSON.stringify(data)
@@ -65,6 +64,14 @@ class WebviewManager {
     addDiagram(data) {
         
         this.diagrames[data.mermaidBase64] = data;
+    }
+
+    clickEventReferenceListenner() {
+        if (this.currentPanel) {
+            this.currentPanel.webview.onDidReceiveMessage((message)=>{
+                console.log('Message reçu du WebView:', message);
+            })
+        }
     }
 
 }
