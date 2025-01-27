@@ -19,6 +19,10 @@
       {
         "command": "real-time-performance-profiler.helloWorld",
         "title": "Hello World"
+      },
+      {
+        "command": "real-time-performance-profiler.reference",
+        "title": "reference"
       }
     ],
     "configuration": {
