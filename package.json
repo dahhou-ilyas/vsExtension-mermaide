@@ -4,6 +4,7 @@
   "description": "A VS Code extension that helps developers visualize code through flow diagrams",
   "version": "1.0.0",
   "type": "commonjs",
+  "publisher": "GeneratedFlowChart",
   "engines": {
     "vscode": "^1.96.0"
   },
