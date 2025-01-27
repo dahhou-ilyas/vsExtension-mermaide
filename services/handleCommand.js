@@ -29,7 +29,7 @@ async function handleCommande_genreteFlowDiagrame(webviewManager,generateMermaid
     
     webviewManager.addDiagram(data);
     webviewManager.createOrUpdatePanel(
-        mermaidBase64, 
+        data, 
         editor.viewColumn
     );
 }

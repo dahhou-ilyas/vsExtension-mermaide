@@ -25,7 +25,7 @@ class WebviewManager {
     }
 
     createNewPanel() {
-        const keysString = this.getExistingDiagramKeys();
+        const values = this.getExistingDiagramValues();
         
         this.currentPanel = vscode.window.createWebviewPanel(
             'mistralPanel',
@@ -39,7 +39,7 @@ class WebviewManager {
 
         this.currentPanel.webview.postMessage({
             command: 'mistralResponse',
-            text: keysString || ""
+            text: JSON.stringify(values) || ""
         });
 
         this.currentPanel.webview.html = getWebviewContent(this.currentPanel, this.context);
@@ -47,10 +47,10 @@ class WebviewManager {
         this.setupPanelDisposal();
     }
 
-    getExistingDiagramKeys() {
-        return Object.keys(this.diagrames).length !== 0 
-            ? Object.keys(this.diagrames).join(",") 
-            : "";
+    getExistingDiagramValues() {
+        return Object.values(this.diagrames).length !== 0
+          ? Object.values(this.diagrames).join(",")
+          : "";
     }
 
     setupPanelDisposal() {
@@ -58,6 +58,8 @@ class WebviewManager {
             this.currentPanel = undefined;
         });
     }
+
+    // il faut teste si le diagrame déja existe
 
     addDiagram(data) {
         this.diagrames[data.mermaidBase64] = data;
