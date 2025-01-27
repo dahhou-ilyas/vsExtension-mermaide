@@ -1,8 +1,9 @@
-name: Flow Chart generator
+name: Publish VS Code Extension
 
 on:
+  workflow_dispatch:  # Permet de déclencher manuellement le workflow
   release:
-    types: [published]  # Déclenché lors d'une nouvelle release GitHub
+    types: [published]  # Déclenché lors de la publication d'une release
 
 jobs:
   build-and-publish:
