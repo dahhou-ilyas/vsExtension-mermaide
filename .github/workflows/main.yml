@@ -1,0 +1,31 @@
+name: Flow Chart generator
+
+on:
+  release:
+    types: [published]  # Déclenché lors d'une nouvelle release GitHub
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Install vsce (VS Code Extension Manager)
+        run: npm install -g vsce
+
+      - name: Package the extension
+        run: vsce package
+
+      - name: Publish to Marketplace
+        run: vsce publish --pat ${{ secrets.AZURE_TOKEN }}
+        env:
+          AZURE_TOKEN: ${{ secrets.AZURE_TOKEN }}
