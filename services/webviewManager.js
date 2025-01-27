@@ -44,6 +44,7 @@ class WebviewManager {
 
         this.currentPanel.webview.html = getWebviewContent(this.currentPanel, this.context);
         
+        this.clickEventReferenceListenner();
         this.setupPanelDisposal();
     }
 

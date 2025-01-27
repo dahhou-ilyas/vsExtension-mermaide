@@ -31,7 +31,6 @@ async function handleCommande_genreteFlowDiagrame(webviewManager,generateMermaid
         data, 
         editor.viewColumn
     );
-    webviewManager.clickEventReferenceListenner();
 
 }
 

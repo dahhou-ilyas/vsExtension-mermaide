@@ -4,6 +4,8 @@ const React = require("react");
 const { useState, useEffect } = React;
 const ReactDOM = require("react-dom/client");
 
+const vscode = window.acquireVsCodeApi();
+
 const MistralResponsePanel = () => {
   const [response, setResponse] = useState([]);
   const [MermaidComponent, setMermaidComponent] = useState(null); // Stocke le composant Mermaid importé dynamiquement
@@ -71,7 +73,7 @@ const MistralResponsePanel = () => {
         <div>
           <h2 className="text-xl font-bold mb-2">Mistral AI Response:</h2>
           {response.map((res, index) => (
-            MermaidComponent ? <Card res={res} component={MermaidComponent}/> : <p key={index}>Loading chart...</p>
+            MermaidComponent ? <Card vscode={vscode} key={index} res={res} component={MermaidComponent}/> : <p key={index}>Loading chart...</p>
           ))}
         </div>
       ) : (

@@ -1,11 +1,17 @@
 const React = require('react');
 
-const Card = ({ res, component: Component }) => {
+
+
+const Card = ({ vscode,res, component: Component }) => {
     const handleClick = () => {
-        window.acquireVsCodeApi().postMessage({
-            command: 'reference',
-            text: JSON.stringify(res.reference)
-        });
+        if (res.reference) {
+            vscode.postMessage({
+                command: 'reference',
+                text: JSON.stringify(res.reference)
+            });
+        } else {
+            console.error('No reference found in res');
+        }
     }
     return (
         <div className="rounded-lg border border-gray-200 bg-white shadow-sm hover:shadow-md transition-shadow duration-200">
