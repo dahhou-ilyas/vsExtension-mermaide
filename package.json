@@ -1,8 +1,8 @@
 {
-  "name": "real-time-performance-profiler",
-  "displayName": "Real-Time-Performance-Profiler",
-  "description": "Instant monitoring of code performance",
-  "version": "0.0.1",
+  "name": "flowchartgenerator",
+  "displayName": "Flowchart Generator",
+  "description": "A VS Code extension that helps developers visualize code through flow diagrams",
+  "version": "1.0.0",
   "type": "commonjs",
   "engines": {
     "vscode": "^1.96.0"
@@ -14,6 +14,12 @@
     "onStartupFinished"
   ],
   "main": "./extension.js",
+  "icon": "icon.png",
+  "galleryBanner": {
+    "color": "#21214c",
+    "theme": "dark"
+  },
+  "enabledApiProposals": ["contribEditorContentMenu"],
   "contributes": {
     "commands": [
       {
@@ -30,6 +36,15 @@
           "description": "Liste des éléments de votre extension"
         }
       }
+    },
+    "menus": {
+      "editor/content": [
+        {
+          "command": "real-time-performance-profiler.generateFlowChart",
+          "when": "editorTextFocus",
+          "group": "navigation" 
+        }
+      ]
     }
   },
   "scripts": {

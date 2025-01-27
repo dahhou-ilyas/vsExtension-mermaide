@@ -1,65 +1,77 @@
-# real-time-performance-profiler README
+# Real-Time Performance Profiler
 
-This is the README for your extension "real-time-performance-profiler". After writing up a brief description, we recommend including the following sections.
+A VS Code extension that helps developers visualize code through flow diagrams.
 
 ## Features
 
-Describe specific features of your extension including screenshots of your extension in action. Image paths are relative to this README file.
+- **Flow Chart Generation**: Automatically creates visual flow diagrams from your code
+- **Interactive Visualization**: View and interact with generated diagrams in a dedicated webview panel
+- **Code Integration**: Seamlessly integrates with your existing codebase
 
-For example if there is an image subfolder under your extension project workspace:
+## Installation
 
-\!\[feature X\]\(images/feature-x.png\)
+1. Open VS Code
+2. Go to Extensions (Ctrl+Shift+X)
+3. Search for "Real-Time Performance Profiler"
+4. Click Install
 
-> Tip: Many popular extensions utilize animations. This is an excellent way to show off your extension! We recommend short, focused animations that are easy to follow.
+## Usage
+
+1. Select the code you want to analyze
+2. Right-click and select "Generate Flow Chart" or use the command palette
+3. View the generated diagram in the side panel
 
 ## Requirements
 
-If you have any requirements or dependencies, add a section describing those and how to install and configure them.
+- VS Code 1.96.0 or higher
+- Node.js 18.x or higher
+- An internet connection for certain features
 
 ## Extension Settings
 
-Include if your extension adds any VS Code settings through the `contributes.configuration` extension point.
-
-For example:
-
 This extension contributes the following settings:
 
-* `myExtension.enable`: Enable/disable this extension.
-* `myExtension.thing`: Set to `blah` to do something.
+* `real-time-performance-profiler.enable`: Enable/disable the extension
+* `real-time-performance-profiler.diagramStyle`: Set the visual style of generated diagrams
 
-## Known Issues
+## Development
 
-Calling out known issues can help limit users opening duplicate issues against your extension.
+To build and run this extension locally:
 
-## Release Notes
+```bash
+git clone https://github.com/yourusername/real-time-performance-profiler
+cd real-time-performance-profiler
+npm install
+code .
+```
 
-Users appreciate release notes as you update your extension.
+Press F5 to launch the extension in development mode.
 
-### 1.0.0
+## Dependencies
 
-Initial release of ...
+- Mermaid.js for diagram generation
+- Chart.js for performance visualization
+- React for UI components
+- Webpack for bundling
 
-### 1.0.1
+## Contributing
 
-Fixed issue #.
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
 
-### 1.1.0
+## License
 
-Added features X, Y, and Z.
+This project is licensed under the MIT License - see the LICENSE file for details.
 
----
+## Acknowledgments
 
-## Working with Markdown
+- Thanks to the VS Code extension community
+- Inspired by various code visualization tools
+- Built with modern web technologies
 
-You can author your README using Visual Studio Code.  Here are some useful editor keyboard shortcuts:
+## Support
 
-* Split the editor (`Cmd+\` on macOS or `Ctrl+\` on Windows and Linux)
-* Toggle preview (`Shift+Cmd+V` on macOS or `Shift+Ctrl+V` on Windows and Linux)
-* Press `Ctrl+Space` (Windows, Linux, macOS) to see a list of Markdown snippets
-
-## For more information
-
-* [Visual Studio Code's Markdown Support](http://code.visualstudio.com/docs/languages/markdown)
-* [Markdown Syntax Reference](https://help.github.com/articles/markdown-basics/)
-
-**Enjoy!**
+For support, please open an issue in the GitHub repository or contact the maintainers.
