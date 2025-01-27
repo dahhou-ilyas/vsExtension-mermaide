@@ -5,6 +5,10 @@
   "version": "1.0.0",
   "type": "commonjs",
   "publisher": "GeneratedFlowChart",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dahhou-ilyas/vsExtension-mermaide"
+  },
   "engines": {
     "vscode": "^1.96.0"
   },
