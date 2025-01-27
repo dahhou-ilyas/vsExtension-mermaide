@@ -8,18 +8,18 @@ class WebviewManager {
         this.diagrames = context.workspaceState.get('diagrames', {});
     }
 
-    createOrUpdatePanel(mermaidBase64, columnToShowIn) {
+    createOrUpdatePanel(data, columnToShowIn) {
         if (this.currentPanel) {
-            this.updateExistingPanel(mermaidBase64, columnToShowIn);
+            this.updateExistingPanel(data, columnToShowIn);
         } else {
             this.createNewPanel();
         }
     }
 
-    updateExistingPanel(mermaidBase64, columnToShowIn) {
+    updateExistingPanel(data, columnToShowIn) {
         this.currentPanel.webview.postMessage({
             command: 'mistralResponse',
-            text: mermaidBase64
+            text: JSON.stringify(data)
         });
         this.currentPanel.reveal(columnToShowIn);
     }
@@ -59,8 +59,8 @@ class WebviewManager {
         });
     }
 
-    addDiagram(mermaidBase64) {
-        this.diagrames[mermaidBase64] = "0";
+    addDiagram(data) {
+        this.diagrames[data.mermaidBase64] = data;
     }
 
 }

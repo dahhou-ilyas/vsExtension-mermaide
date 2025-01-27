@@ -18,16 +18,37 @@ const MistralResponsePanel = () => {
     const handleMessage = (event) => {
       const message = event.data;
       if (message.command === "mistralResponse") {
-        const mermaideBase64_Liste = message.text.split(",")
-        try{
-          const mermaids = mermaideBase64_Liste.map(atob)
+        try {
+          const parsedData = JSON.parse(message.text);
           
-          setResponse((prev) => [...prev, ...mermaids]);
-        }catch (error) {
-          console.error("Erreur lors du décodage des chaînes Base64 :", error);
+          const dataArray = Array.isArray(parsedData) ? parsedData : [parsedData];
+          
+          const processedData = dataArray.map(data => {
+            if (!data.mermaidBase64) {
+              console.warn("Donnée reçue sans mermaidBase64:", data);
+              return null;
+            }
+    
+            try {
+              const decodedMermaid = atob(data.mermaidBase64);
+              return {
+                mermaid: decodedMermaid,
+                reference: {
+                  uri: data.uri,
+                  range: data.range
+                }
+              };
+            } catch (decodingError) {
+              console.error("Erreur de décodage base64:", decodingError);
+              return null;
+            }
+          }).filter(item => item !== null);
+
+          setResponse(prev => [...prev, ...processedData]);
+          
+        } catch (error) {
+          console.error("Erreur lors du traitement du message :", error);
         }
-        
-        
       }
     };
 

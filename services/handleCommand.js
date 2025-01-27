@@ -16,15 +16,36 @@ async function handleCommande_genreteFlowDiagrame(webviewManager,generateMermaid
         return;
     }
 
+    const referece = getFunctionReference(editor)
+
     const mermaidBase64 = Buffer.from(
         generateMermaidFlow(validation.selectedText)
     ).toString('base64');
+
+    const data = {
+        mermaidBase64:mermaidBase64,
+        ...referece
+    }
     
-    webviewManager.addDiagram(mermaidBase64);
+    webviewManager.addDiagram(data);
     webviewManager.createOrUpdatePanel(
         mermaidBase64, 
         editor.viewColumn
     );
+}
+
+
+function getFunctionReference(editor){
+    const documentUri = editor.document.uri;
+    
+    const selection = editor.selection;
+
+    const range = new vscode.Range(selection.start, selection.end);
+
+    return {
+        uri: documentUri.toString(),
+        range
+    };
 }
 
 module.exports = {handleCommande_genreteFlowDiagrame}
