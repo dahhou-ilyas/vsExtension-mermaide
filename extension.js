@@ -18,6 +18,11 @@ async function activate(context) {
         vscode.commands.registerCommand('real-time-performance-profiler.helloWorld', () => handleCommande_genreteFlowDiagrame(webviewManager,generateMermaidFlow,CodeValidator,MESSAGES))
     );
 
+	// on doit crée un refrence dans react page a fin de pointer vers les fonctionne qui sont dessiner donc pour faire :
+	// pour chaque foit on extraire un functionn on extraire le path de fichier et le range de function (start position, end position)
+	// par la suite on transferer ces params a react et pour chaque diagramme crée on crée avec cette diagramme un ref button 
+	//lorsque on clik sur le buuton on transfere les parramétre a la vscode et dans vscode on on fait un rediriction avec le path et le range
+
 	context.subscriptions.push(
         vscode.commands.registerCommand('real-time-performance-profiler.reference', () =>{
 			const editor = vscode.window.activeTextEditor;
