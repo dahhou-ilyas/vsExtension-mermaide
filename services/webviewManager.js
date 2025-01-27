@@ -68,11 +68,28 @@ class WebviewManager {
     }
 
     clickEventReferenceListenner() {
-        if (this.currentPanel) {
-            this.currentPanel.webview.onDidReceiveMessage((message)=>{
-                console.log('Message reçu du WebView:', message);
-            })
-        }
+        if (!this.currentPanel) return;
+
+        this.currentPanel.webview.onDidReceiveMessage(async (message) => {
+            if (message.command !== 'reference') return;
+
+            try {
+                const reference = JSON.parse(message.text);
+                const document = await vscode.workspace.openTextDocument(vscode.Uri.parse(reference.uri));
+                const editor = await vscode.window.showTextDocument(document);
+
+                // Create range from reference coordinates
+                const range = new vscode.Range(
+                    new vscode.Position(reference.range[0].line, reference.range[0].character),
+                    new vscode.Position(reference.range[1].line, reference.range[1].character)
+                );
+
+                // Reveal the selected range in editor
+                editor.revealRange(range);
+            } catch (error) {
+                console.error('Error handling reference click:', error);
+            }
+        });
     }
 
 }
