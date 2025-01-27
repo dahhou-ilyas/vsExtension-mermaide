@@ -1,3 +1,5 @@
+const Card = require("./Card");
+
 const React = require("react");
 const { useState, useEffect } = React;
 const ReactDOM = require("react-dom/client");
@@ -69,8 +71,7 @@ const MistralResponsePanel = () => {
         <div>
           <h2 className="text-xl font-bold mb-2">Mistral AI Response:</h2>
           {response.map((res, index) => (
-            // Rendre le composant Mermaid uniquement après son importation
-            MermaidComponent ? <MermaidComponent key={index} chart={res.mermaid} /> : <p key={index}>Loading chart...</p>
+            MermaidComponent ? <Card res={res} component={MermaidComponent}/> : <p key={index}>Loading chart...</p>
           ))}
         </div>
       ) : (
