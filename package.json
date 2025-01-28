@@ -31,22 +31,12 @@
         "title": "generateFlowChart"
       }
     ],
-    "configuration": {
-      "title": "Your Extension",
-      "properties": {
-        "yourExtension.items": {
-          "type": "array",
-          "default": [],
-          "description": "Liste des éléments de votre extension"
-        }
-      }
-    },
     "menus": {
-      "editor/content": [
+      "editor/context": [
         {
           "command": "real-time-performance-profiler.generateFlowChart",
           "when": "editorTextFocus",
-          "group": "navigation" 
+          "group": "navigation"
         }
       ]
     }
