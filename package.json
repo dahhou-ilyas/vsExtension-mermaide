@@ -2,7 +2,7 @@
   "name": "flowchartgenerator",
   "displayName": "Flowchart Generator",
   "description": "A VS Code extension that helps developers visualize code through flow diagrams",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "type": "commonjs",
   "publisher": "GeneratedFlowChart",
   "repository": {
