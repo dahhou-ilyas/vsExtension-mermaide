@@ -6,6 +6,7 @@ const ReactDOM = require("react-dom/client");
 
 const vscode = window.acquireVsCodeApi();
 
+
 const MistralResponsePanel = () => {
   const [response, setResponse] = useState([]);
   const [MermaidComponent, setMermaidComponent] = useState(null); // Stocke le composant Mermaid importé dynamiquement
@@ -64,25 +65,44 @@ const MistralResponsePanel = () => {
   }, []);
 
   return (
-    <div className="p-4">
-      <h1 className="text-6xl font-bold bg-gradient-to-r from-orange-500 via-orange-400 to-orange-300 text-transparent bg-clip-text w-full text-center">
-        Welcome to your representation
-      </h1>
+    <>
+        <h1 className="text-4xl sm:text-6xl font-bold text-center mb-12 bg-gradient-to-r from-orange-600 via-orange-500 to-orange-400 text-transparent bg-clip-text">
+          Welcome to your representation
+        </h1>
 
-      {response.length > 0 ? (
-        <div>
-          <h2 className="text-xl font-bold mb-2">Flow Charts :</h2>
-          {response.map((res, index) => (
-            MermaidComponent ? <Card vscode={vscode} key={index} res={res} component={MermaidComponent}/> : <p key={index}>Loading chart...</p>
-          ))}
+        <div className="bg-white rounded-lg shadow-lg p-6">
+          {response.length > 0 ? (
+            <div className="space-y-8">
+              <h2 className="text-2xl font-semibold text-gray-800 border-b pb-3">
+                Flow Charts
+              </h2>
+              <div className="grid gap-6">
+                {response.map((res, index) => (
+                  MermaidComponent ? (
+                    <div key={index} className="transform transition-all duration-300 hover:scale-[1.01]">
+                      <Card vscode={vscode} res={res} component={MermaidComponent}/>
+                    </div>
+                  ) : (
+                    <div key={index} className="animate-pulse bg-gray-100 rounded-lg p-4">
+                      <p className="text-gray-500">Loading chart...</p>
+                    </div>
+                  )
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="text-center py-12">
+              <p className="text-gray-500 text-lg">
+                Waiting for response...
+              </p>
+              <div className="mt-4 animate-spin h-8 w-8 border-4 border-orange-500 border-t-transparent rounded-full mx-auto"></div>
+            </div>
+          )}
         </div>
-      ) : (
-        <p className="text-gray-500">Waiting for response...</p>
-      )}
-      
-    </div>
+    </>
   );
 };
+
 
 const rootElement = document.getElementById("root");
 const root = ReactDOM.createRoot(rootElement);
