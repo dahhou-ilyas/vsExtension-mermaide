@@ -71,13 +71,13 @@ const MistralResponsePanel = () => {
 
       {response.length > 0 ? (
         <div>
-          <h2 className="text-xl font-bold mb-2">Mistral AI Response:</h2>
+          <h2 className="text-xl font-bold mb-2">Flow Charts :</h2>
           {response.map((res, index) => (
             MermaidComponent ? <Card vscode={vscode} key={index} res={res} component={MermaidComponent}/> : <p key={index}>Loading chart...</p>
           ))}
         </div>
       ) : (
-        <p className="text-gray-500">Waiting for Mistral AI response...</p>
+        <p className="text-gray-500">Waiting for response...</p>
       )}
       
     </div>
