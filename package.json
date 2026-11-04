@@ -1,8 +1,8 @@
 {
   "name": "flowchartgenerator",
   "displayName": "Flowchart Generator",
-  "description": "Turn JavaScript and TypeScript into interactive flowcharts, and flowcharts back into code. Edit the chart, see the code update live, apply it to your source.",
-  "version": "2.2.0",
+  "description": "Turn JavaScript and TypeScript into interactive, beautifully rendered flowcharts — and flowcharts back into code. Own layout engine, cyberpunk style, live editing.",
+  "version": "3.0.0",
   "publisher": "GeneratedFlowChart",
   "author": {
     "name": "Ilyas Dahhou"
@@ -33,7 +33,6 @@
     "flowchart",
     "control flow",
     "diagram",
-    "mermaid",
     "visualization",
     "javascript",
     "typescript",
@@ -41,7 +40,9 @@
     "complexity",
     "code generation",
     "flowchart to code",
-    "visual programming"
+    "visual programming",
+    "mermaid export",
+    "cfg"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
@@ -151,24 +152,23 @@
           "default": "TD",
           "description": "Layout direction of generated flowcharts."
         },
-        "flowchartGenerator.theme": {
+        "flowchartGenerator.style": {
           "type": "string",
           "enum": [
-            "auto",
-            "default",
-            "dark",
-            "forest",
-            "neutral"
+            "cyberpunk",
+            "minimal"
           ],
           "enumDescriptions": [
-            "Follow the active VS Code color theme",
-            "Mermaid light theme",
-            "Mermaid dark theme",
-            "Mermaid forest theme",
-            "Mermaid neutral (print friendly) theme"
+            "Neon panels, glowing PCB-like traces and animated flow on a dark grid",
+            "Sober colours that follow the VS Code theme"
           ],
-          "default": "auto",
-          "description": "Color theme used to render flowcharts."
+          "default": "cyberpunk",
+          "description": "Visual style of the flowchart renderer."
+        },
+        "flowchartGenerator.animations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Animate the flow along edges and the appearance of nodes (also disabled when the OS asks for reduced motion)."
         },
         "flowchartGenerator.maxLabelLength": {
           "type": "number",
@@ -294,7 +294,6 @@
     "eslint": "^9.30.0",
     "eslint-plugin-react": "^7.37.5",
     "globals": "^16.3.0",
-    "mermaid": "^11.9.0",
     "mocha": "^11.7.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

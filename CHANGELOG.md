@@ -3,6 +3,26 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] - 2026-11-04
+
+### Added
+- **Own rendering engine** replacing Mermaid in the panel:
+  - a layered (Sugiyama) layout made for control flow: DFS cycle removal, longest-path layering, barycenter crossing reduction and exact overlap removal by isotonic regression;
+  - loops in a right gutter and exceptional flow in a left gutter (VEIL), with edges to the same target sharing one lane;
+  - callback / nested function flows laid out as a tree to the right of their parent;
+  - SVG renderer with a **cyberpunk** style (neon chamfered panels, PCB-like traces with 45° bends, HUD tags and brackets, animated flow packets, scanlines) and a **minimal** style that follows the VS Code theme;
+  - animated zoom around the pointer, drag to pan, double-click to fit, minimap, focus mode on hover, HUD tooltip with highlighted code, selection reticle, cursor-sync highlight, gliding nodes and morphing traces while editing;
+  - self-contained SVG / PNG export.
+- `flowchartGenerator.style` and `flowchartGenerator.animations` settings.
+- Layout tests that check invariants (no overlap, attached and orthogonal edges, nodes inside their frame) on hundreds of real-world functions.
+
+### Changed
+- The panel bundle went from 3.6 MB to 324 KB.
+- Mermaid is only used for text export (copy / Markdown); flowcharts saved by older versions are converted automatically.
+
+### Removed
+- `flowchartGenerator.theme` (Mermaid themes), replaced by `flowchartGenerator.style`.
+
 ## [2.2.0] - 2026-11-04
 
 ### Added

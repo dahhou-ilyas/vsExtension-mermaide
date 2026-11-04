@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const { VIEW_TYPE, MESSAGES } = require('./constants');
 const { ToWebview, FromWebview } = require('./shared/protocol');
 const { getSettings, labelSettings } = require('./config');
+const { importMermaid } = require('./core/mermaidImport');
 
 /**
  * Owns the single flowchart webview panel and its message protocol.
@@ -102,13 +103,33 @@ class FlowchartPanel {
         const settings = getSettings();
         this.panel.webview.postMessage({
             type: ToWebview.STATE,
-            diagrams: this.store.all(),
-            settings: { theme: settings.theme, labels: labelSettings(settings) },
+            diagrams: this.store.all().map((d) => this.withGraph(d)),
+            settings: { style: settings.style, animate: settings.animations, labels: labelSettings(settings) },
             focusId: this.focusId,
             editId: this.editId
         });
         this.focusId = undefined;
         this.editId = undefined;
+    }
+
+    /**
+     * Flowcharts saved by version 2.0 only have their Mermaid text: rebuild the
+     * graph the renderer needs (cached).
+     */
+    withGraph(diagram) {
+        if (diagram.graph || !diagram.mermaid) return diagram;
+        this.legacy = this.legacy || new Map();
+        if (!this.legacy.has(diagram.id)) {
+            let graph = null;
+            try {
+                graph = importMermaid(diagram.mermaid);
+            } catch {
+                graph = null;
+            }
+            this.legacy.set(diagram.id, graph);
+        }
+        const graph = this.legacy.get(diagram.id);
+        return graph ? { ...diagram, graph } : diagram;
     }
 
     /** @param {any} message */
