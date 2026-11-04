@@ -4,6 +4,39 @@
  */
 
 export const THEMES = {
+    classic: {
+        '--fx-bg': 'var(--vscode-editor-background, #ffffff)',
+        '--fx-bg-2': 'var(--vscode-editor-background, #ffffff)',
+        '--fx-fg': 'var(--vscode-editor-foreground, #1f2328)',
+        '--fx-grid': 'color-mix(in srgb, var(--fx-fg) 13%, transparent)',
+        '--fx-frame': 'color-mix(in srgb, var(--fx-fg) 16%, transparent)',
+        '--fx-frame-embedded': 'color-mix(in srgb, var(--fx-fg) 13%, transparent)',
+        '--fx-frame-fill': 'color-mix(in srgb, var(--fx-fg) 2.5%, transparent)',
+        '--fx-title': 'var(--fx-fg)',
+        '--fx-text': 'var(--fx-fg)',
+        '--fx-muted': 'var(--vscode-descriptionForeground, #6e7781)',
+        '--fx-process': '#3b82f6',
+        '--fx-start': '#22a06b',
+        '--fx-end': '#7d8590',
+        '--fx-decision': '#d98c0a',
+        '--fx-loop': '#8b5cf6',
+        '--fx-return': '#0e9f8e',
+        '--fx-throw': '#e5534b',
+        '--fx-try': '#e8833a',
+        '--fx-junction': '#7d8590',
+        '--fx-async': '#0e9f8e',
+        '--fx-edge': 'color-mix(in srgb, var(--fx-fg) 52%, transparent)',
+        '--fx-back': 'color-mix(in srgb, var(--fx-fg) 52%, transparent)',
+        '--fx-exception': '#e5534b',
+        '--fx-abrupt': '#8b5cf6',
+        '--fx-callback': '#0e9f8e',
+        '--fx-yes': '#22a06b',
+        '--fx-no': '#e5534b',
+        '--fx-fill-alpha': '1',
+        '--fx-glow': '0',
+        '--fx-font': "var(--vscode-editor-font-family, 'SF Mono', Menlo, Consolas, monospace)",
+        '--fx-ui-font': "var(--vscode-font-family, -apple-system, 'Segoe UI', sans-serif)"
+    },
     cyberpunk: {
         '--fx-bg': '#05080f',
         '--fx-bg-2': '#0a1120',
@@ -33,36 +66,6 @@ export const THEMES = {
         '--fx-fill-alpha': '0.07',
         '--fx-glow': '1',
         '--fx-font': "'JetBrains Mono', 'Fira Code', 'Cascadia Code', Menlo, Consolas, monospace"
-    },
-    minimal: {
-        '--fx-bg': 'var(--vscode-editor-background, #1e1e1e)',
-        '--fx-bg-2': 'var(--vscode-editor-background, #1e1e1e)',
-        '--fx-grid': 'rgba(128, 128, 128, 0.08)',
-        '--fx-frame': 'rgba(128, 128, 128, 0.35)',
-        '--fx-frame-embedded': 'rgba(128, 128, 128, 0.25)',
-        '--fx-title': 'var(--vscode-foreground, #cccccc)',
-        '--fx-text': 'var(--vscode-editor-foreground, #d4d4d4)',
-        '--fx-muted': 'var(--vscode-descriptionForeground, #8b8b8b)',
-        '--fx-process': '#7f8ea3',
-        '--fx-start': '#3fb950',
-        '--fx-end': '#8b949e',
-        '--fx-decision': '#d29922',
-        '--fx-loop': '#a371f7',
-        '--fx-return': '#2f81f7',
-        '--fx-throw': '#f85149',
-        '--fx-try': '#db6d28',
-        '--fx-junction': '#8b949e',
-        '--fx-async': '#39c5cf',
-        '--fx-edge': '#8b949e',
-        '--fx-back': '#a371f7',
-        '--fx-exception': '#f85149',
-        '--fx-abrupt': '#a371f7',
-        '--fx-callback': '#39c5cf',
-        '--fx-yes': '#3fb950',
-        '--fx-no': '#f85149',
-        '--fx-fill-alpha': '0.12',
-        '--fx-glow': '0',
-        '--fx-font': "var(--vscode-editor-font-family, Menlo, Consolas, monospace)"
     }
 };
 
@@ -78,11 +81,57 @@ export const KIND_TAG = {
 
 export const EDGE_COLOR = { normal: 'edge', back: 'back', exception: 'exception', abrupt: 'abrupt', callback: 'callback' };
 
+/** What each style draws. */
+export const LOOKS = {
+    classic: { shapes: 'classic', edges: 'smooth', tags: false, lineNumbers: false, packets: false, chips: false, faintSecondary: true, fontSize: 13, lineHeight: 18 },
+    cyberpunk: { shapes: 'compact', edges: 'trace', tags: true, lineNumbers: true, packets: true, chips: true, faintSecondary: false, fontSize: 12.5, lineHeight: 17 }
+};
+
+function classicStyles() {
+    const vars = Object.entries(THEMES.classic).map(([k, v]) => `${k}:${v};`).join('');
+    return `
+.fx-root{${vars}font-family:var(--fx-font);}
+.fx-bg{fill:var(--fx-bg);}
+.fx-grid-dot{fill:var(--fx-grid);}
+.fx-unit-frame{fill:var(--fx-frame-fill);stroke:var(--fx-frame);stroke-width:1;}
+.fx-unit-frame.embedded{stroke-dasharray:5 4;}
+.fx-unit-title{fill:var(--fx-text);font-family:var(--fx-ui-font);font-size:13px;font-weight:600;}
+.fx-unit-kind{fill:var(--fx-muted);font-family:var(--fx-ui-font);font-size:10px;letter-spacing:.08em;}
+.fx-node{cursor:pointer;}
+.fx-node .fx-shape{stroke-width:1.5;fill:color-mix(in srgb, var(--c) 11%, var(--fx-bg));filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.16));transition:stroke-width .15s ease,filter .15s ease;}
+.fx-node .fx-detail{fill:none;stroke:var(--c);stroke-width:1.2;opacity:.7;}
+.fx-node .fx-text{fill:var(--fx-text);font-size:13px;}
+.fx-node .fx-async{fill:var(--fx-async);font-family:var(--fx-ui-font);font-size:9.5px;font-style:italic;}
+.fx-node:hover .fx-shape,.fx-node.hovered .fx-shape{stroke-width:2.2;filter:drop-shadow(0 3px 8px rgba(0,0,0,.22));}
+.fx-node.unreachable{opacity:.5;}
+.fx-node.unreachable .fx-shape{stroke-dasharray:5 4;}
+.fx-node.dimmed{opacity:.28;}
+.fx-edge.dimmed{opacity:.12;}
+.fx-node{transition:opacity .2s ease,transform .38s cubic-bezier(.2,.8,.2,1);}
+.fx-edge{transition:opacity .2s ease;}
+.fx-trace{transition:d .38s cubic-bezier(.2,.8,.2,1);}
+.fx-edge .fx-trace{fill:none;stroke-width:1.5;stroke-linejoin:round;stroke-linecap:round;}
+.fx-edge.hovered .fx-trace{stroke-width:2.4;}
+.fx-edge.secondary{opacity:.38;}
+.fx-edge.secondary.hovered{opacity:1;}
+.fx-edge.exception .fx-trace,.fx-edge.abrupt .fx-trace{stroke-dasharray:5 4;}
+.fx-edge.callback .fx-trace{stroke-dasharray:1.5 4;stroke-linecap:round;stroke-width:1.6;}
+.fx-edge-text{font-family:var(--fx-ui-font);font-size:11px;font-weight:600;}
+.fx-reticle{fill:none;stroke:var(--vscode-focusBorder, #0969da);stroke-width:2;}
+.fx-cursor{fill:none;stroke:var(--vscode-focusBorder, #0969da);stroke-width:2;stroke-dasharray:4 4;animation:fx-dash 1s linear infinite;}
+@keyframes fx-dash{to{stroke-dashoffset:-16;}}
+.fx-appear{animation:fx-in .35s ease-out both;}
+@keyframes fx-in{from{opacity:0;}to{opacity:1;}}
+@media (prefers-reduced-motion: reduce){.fx-cursor,.fx-appear{animation:none;}.fx-node,.fx-trace{transition:none;}}
+`;
+}
+
 /** CSS embedded in the SVG (also used by exports). */
 export function svgStyles(themeName) {
-    const theme = THEMES[themeName] || THEMES.cyberpunk;
+    if (themeName === 'classic' || !THEMES[themeName]) return classicStyles();
+    const theme = THEMES[themeName];
     const vars = Object.entries(theme).map(([k, v]) => `${k}:${v};`).join('');
-    const glow = themeName === 'minimal' ? 0 : 1;
+    const glow = 1;
     return `
 .fx-root{${vars}font-family:var(--fx-font);}
 .fx-bg{fill:var(--fx-bg);}

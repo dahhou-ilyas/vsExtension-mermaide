@@ -2,11 +2,11 @@
 
 **Turn JavaScript and TypeScript into interactive flowcharts, and flowcharts back into code, right inside VS Code.**
 
-Flowchart Generator parses your code, builds its real control-flow graph and draws it with its **own rendering engine**: a layered layout made for control flow, neon "circuit-board" traces, animated flow, focus mode and minimap. Click any node to jump to the code. The panel also shows complexity metrics and actionable insights.
+Flowchart Generator parses your code, builds its real control-flow graph and draws it with its **own rendering engine**: a layered layout made for control flow, classic flowchart symbols, smooth curved arrows, focus mode and minimap. Click any node to jump to the code. The panel also shows complexity metrics and actionable insights.
 
 It also works in the other direction: **edit the chart and the code is regenerated live**. You can then apply it to your source after reviewing a diff, design a function from scratch, or convert any Mermaid flowchart into code.
 
-![Flowchart Generator: loops, focus mode and tooltip](media/focus.jpg)
+![Flowchart Generator: classic flowchart of a function with nested loops](media/loops.jpg)
 
 ## Features
 
@@ -14,16 +14,19 @@ It also works in the other direction: **edit the chart and the code is regenerat
 
 Flowcharts are drawn by a purpose-built engine (no Mermaid, no layout library):
 
-- **Layout made for control flow.** It uses the Sugiyama layered method (cycle removal, layering, crossing reduction with barycenter sweeps), with coordinates computed by an exact least-squares overlap removal (isotonic regression). `yes` branches go left and `no` branches go right.
-- **Readable loops and exceptions.** Following the VEIL study of CFG readability, loop back edges run in a gutter on the right and exceptional flow in a gutter on the left. Edges going to the same target share one lane, like a bus on a circuit board.
-- **Cyberpunk style.** Neon panels with chamfered corners, PCB traces with 45° bends, HUD tags and corner brackets, animated packets showing the direction of flow, and a staggered appear animation. A `minimal` style follows the VS Code theme instead.
-- **Fluid interaction.** Animated zoom around the pointer (<kbd>Ctrl</kbd>/<kbd>⌘</kbd> + wheel or pinch), drag to pan, double-click to fit, and a minimap. Hovering a node dims everything else (focus mode) and shows a tooltip with its highlighted code. In the editor, nodes glide to their new place and traces morph.
-- **Light and fast.** The panel bundle is about 11× smaller than with Mermaid (324 KB instead of 3.6 MB), and laying out a function takes 0.4 ms on average.
-- **Self-contained exports.** SVG and PNG exports embed their styles. Mermaid text is still available (copy / Markdown) for documentation.
+- **Classic flowchart symbols (ISO 5807).** Terminators for start / end / return, rectangles for statements, diamonds for conditions, the "preparation" hexagon for loops, and the "predefined process" symbol (side bars) for `try` / `catch` / `finally` and nested function definitions. Colours follow the VS Code light or dark theme.
+- **A straight main path.** Each node picks the child that leads to the longest continuation and is aligned on it (the vertical-alignment idea of Brandes & Köpf, used by dagre), so the main flow is a straight line. Secondary branches leave a condition from its side vertices, as in hand-drawn flowcharts.
+- **Smooth curved arrows** with short `Yes` / `No` labels next to the branch.
+- **Layered layout made for control flow.** It uses the Sugiyama method (cycle removal, layering, crossing reduction), with coordinates computed by exact least-squares overlap removal (isotonic regression). Following the VEIL study of CFG readability, loops run in a gutter on the right and enter their loop from the side; exceptional flow runs in a gutter on the left.
+- **Calm by default.** Exception, `finally` and callback links are drawn faintly and highlighted when you hover a node. Line numbers and full code are in the tooltip.
+- **Fluid interaction.** Animated zoom around the pointer (<kbd>Ctrl</kbd>/<kbd>⌘</kbd> + wheel or pinch), drag to pan, double-click to fit, and a minimap. Hovering a node dims everything else and shows a tooltip with its highlighted code. In the editor, nodes glide to their new place and arrows morph.
+- **Light and fast.** The panel bundle is about 11× smaller than with Mermaid, and laying out a function takes 0.4 ms on average.
+- **Self-contained exports.** SVG and PNG exports embed their resolved colours. Mermaid text is still available (copy / Markdown) for documentation.
+- **Optional `cyberpunk` style.** Neon panels, circuit-board traces and animated flow on a dark grid.
 
-| Focus mode & tooltip | Minimal style |
-| --- | --- |
-| ![Loops in the right gutter](media/loops.jpg) | ![Minimal style](media/minimal.jpg) |
+| Focus mode & tooltip | Dark theme, exceptions | `cyberpunk` style |
+| --- | --- | --- |
+| ![Focus mode](media/focus.jpg) | ![Dark theme](media/exceptions.jpg) | ![Cyberpunk style](media/cyberpunk.jpg) |
 
 ### Code → flowchart
 
@@ -40,7 +43,7 @@ Flowcharts are drawn by a purpose-built engine (no Mermaid, no layout library):
 - **Multiple functions at once**: each function is drawn in its own titled group, with a per-function metrics table.
 - **Export**: SVG and high-resolution PNG (rendered by the engine), Markdown (a `mermaid` code block, which renders on GitHub and GitLab) or the Mermaid definition copied to the clipboard.
 - **Comfortable viewer**: zoom (buttons or <kbd>Ctrl</kbd>/<kbd>⌘</kbd> + wheel), fit to width, drag to pan, filtering and keyboard navigation.
-- **Two styles**: `cyberpunk` (default) or `minimal`, which follows the VS Code theme.
+- **Two styles**: `classic` (default; follows the VS Code light / dark theme) or `cyberpunk`.
 - **History**: flowcharts are kept per workspace and survive reloads. Use **Regenerate** to refresh one after editing the code.
 - **Private by design**: all analysis runs locally. No network access and no telemetry, and the webview runs under a strict Content Security Policy.
 
@@ -98,34 +101,33 @@ The generator was also run on **11,345 functions** from webpack, ESLint, Mocha, 
 
 | Shape | Meaning |
 | --- | --- |
-| Green hexagonal capsule `FN` | Function entry (`CALLBACK` for an inline callback) |
-| Grey hexagonal capsule | End of the function |
-| Cyan panel with chamfered corners | Statements (consecutive simple statements are grouped) |
-| Yellow hexagon `IF` / `SWITCH` | Condition; `yes` leaves on the left, `no` on the right |
-| Magenta octagon `LOOP` | Loop header; its back edges run in the right gutter |
-| Blue arrow `RET` | `return` |
-| Red notched panel `THROW` | `throw` |
-| Orange panels `TRY` / `CATCH` / `FINALLY` | Exception handling; "end finally" closes a `finally` block |
-| Teal `AWAIT` badge | Contains `await` |
-| `DEF` panel | Nested function definition (its body is drawn as a linked flow) |
-| Dimmed dashed node | Unreachable code |
-| Red dashed trace (left gutter) | This statement may throw: control can go to the `catch` / `finally` |
-| Purple dashed trace | `return` / `throw` passing through `finally`, then `return` / `rethrow` |
-| Teal dotted curve | Statement → inline callback flow, or definition → nested function flow |
+| Green terminator | Function entry (`↳ …` for an inline callback) |
+| Grey terminator | End of the function |
+| Teal terminator | `return` |
+| Blue rectangle | Statements (consecutive simple statements are grouped) |
+| Amber diamond | Condition (`if` / `switch`); the main path continues downward and other branches leave from the sides |
+| Violet hexagon | Loop header; loop-back arrows run on the right and enter the loop from the side |
+| Red rectangle | `throw` |
+| Orange rectangle with side bars | `try` / `catch` / `finally`; "end finally" closes a `finally` block |
+| Rectangle with side bars | Nested function definition (its body is drawn as a linked flow) |
+| Small circle `do` | Entry of a `do…while` loop |
+| *await* in a node | The statement awaits a promise |
+| Faded dashed node | Unreachable code |
+| Faint red dashed arrow (left) | This statement may throw: control can go to the `catch` / `finally` |
+| Faint violet dashed arrow | `return` / `throw` passing through `finally`, then `return` / `rethrow` |
+| Faint teal dotted curve | Statement → inline callback flow, or definition → nested function flow |
 
 ### Callbacks, exceptions and long labels
 
-| Inline callbacks | Precise exceptions |
-| --- | --- |
-| ![Callbacks drawn as linked flows](media/callbacks.jpg) | ![Exceptional control flow](media/exceptions.jpg) |
+![Callbacks drawn as linked flows](media/callbacks.jpg)
 
 ## Settings
 
 | Setting | Default | Description |
 | --- | --- | --- |
 | `flowchartGenerator.direction` | `TD` | Layout direction: `TD` (top to bottom) or `LR` (left to right). |
-| `flowchartGenerator.style` | `cyberpunk` | `cyberpunk`: neon panels, glowing traces and animated flow. `minimal`: sober colours that follow the VS Code theme. |
-| `flowchartGenerator.animations` | `true` | Animate the flow along edges, node appearance and layout changes. Animations are also disabled when the OS asks for reduced motion. |
+| `flowchartGenerator.style` | `classic` | `classic`: ISO flowchart symbols, smooth curved arrows, VS Code light / dark colours. `cyberpunk`: neon panels, circuit-board traces and animated flow. |
+| `flowchartGenerator.animations` | `true` | Animate node appearance, layout changes while editing and, in the cyberpunk style, the flow along edges. Animations are also disabled when the OS asks for reduced motion. |
 | `flowchartGenerator.labels.mode` | `wrap` | `wrap`: long code wraps on several lines and folds nested brackets when very long. `truncate`: labels are cut. |
 | `flowchartGenerator.labels.lineWidth` | `40` | Characters per line in node labels (wrap mode). |
 | `flowchartGenerator.labels.maxLines` | `4` | Lines per statement in node labels (wrap mode). |

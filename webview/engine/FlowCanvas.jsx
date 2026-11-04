@@ -1,15 +1,13 @@
 import React, { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { layoutGraph } from '../../src/core/layout';
-import { nodeShape, cornerBrackets, tracePath, curvePath, labelPoint } from './geometry';
-import { svgStyles, KIND_COLOR, KIND_TAG, THEMES } from './palette';
+import { nodeShape, classicShape, cornerBrackets, tracePath, smoothPath, curvePath, labelPoint } from './geometry';
+import { svgStyles, KIND_COLOR, KIND_TAG, THEMES, LOOKS } from './palette';
 import { makeMeasure } from './measure';
 import { tokenize } from './syntax';
 
 const MARGIN = 40;
 const MIN_ZOOM = 0.15;
 const MAX_ZOOM = 3;
-const LINE_HEIGHT = 17;
-const FONT_SIZE = 12.5;
 const EDGE_KINDS = ['edge', 'back', 'exception', 'abrupt', 'callback', 'muted'];
 
 export const clampZoom = (z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round(z * 100) / 100));
@@ -66,7 +64,7 @@ function CodeTokens({ code }) {
  * Native flowchart renderer (replaces Mermaid): our own layout, SVG and interactions.
  */
 const FlowCanvas = React.forwardRef(function FlowCanvas({
-    graph, labels, theme = 'cyberpunk', zoom, onZoom, onNodeClick, selectedId, highlightId,
+    graph, labels, theme = 'classic', zoom, onZoom, onNodeClick, selectedId, highlightId,
     nodeLines = {}, nodeTexts = {}, tooltipHint, animate = true, maxHeight
 }, ref) {
     const containerRef = useRef(null);
@@ -81,9 +79,14 @@ const FlowCanvas = React.forwardRef(function FlowCanvas({
     }, []);
     const measure = useMemo(() => makeMeasure(fontFamily), [fontFamily]);
 
-    const layout = useMemo(() => layoutGraph(graph, { labels, measure, lineHeight: LINE_HEIGHT, fontSize: FONT_SIZE }), [graph, labels, measure]);
+    const look = LOOKS[theme] || LOOKS.classic;
+    const LINE_HEIGHT = look.lineHeight;
+    const layout = useMemo(
+        () => layoutGraph(graph, { labels, measure, lineHeight: look.lineHeight, fontSize: look.fontSize, shapes: look.shapes }),
+        [graph, labels, measure, look]
+    );
     // Animated packets on very large graphs would cost frames: keep them for readable sizes.
-    const packets = animate && layout.edges.length <= 160;
+    const packets = look.packets && animate && layout.edges.length <= 160;
     const nodesById = useMemo(() => new Map(graph.nodes.map((n) => [n.id, n])), [graph]);
 
     // Container width.
@@ -123,6 +126,20 @@ const FlowCanvas = React.forwardRef(function FlowCanvas({
             const svg = svgRef.current;
             if (!svg) return null;
             const clone = svg.cloneNode(true);
+            // Resolve colours (VS Code variables, color-mix) so the file looks the same anywhere.
+            const originals = svg.querySelectorAll('path, rect, circle, text, line');
+            const copies = clone.querySelectorAll('path, rect, circle, text, line');
+            originals.forEach((el, i) => {
+                const cs = getComputedStyle(el);
+                const c = copies[i];
+                if (!c) return;
+                for (const prop of ['fill', 'stroke', 'stroke-width', 'stroke-dasharray', 'opacity', 'font-size', 'font-family', 'font-weight', 'fill-opacity']) {
+                    const value = cs.getPropertyValue(prop);
+                    if (value) c.setAttribute(prop, value);
+                }
+                c.removeAttribute('class');
+            });
+            clone.querySelectorAll('style').forEach((n) => n.remove());
             clone.setAttribute('xmlns', 'http://www.w3.org/2000/svg');
             clone.setAttribute('width', String(Math.ceil(contentW)));
             clone.setAttribute('height', String(Math.ceil(contentH)));
@@ -219,7 +236,9 @@ const FlowCanvas = React.forwardRef(function FlowCanvas({
                 <defs>
                     <pattern id="fx-grid" width={24} height={24} patternUnits="userSpaceOnUse"
                         patternTransform={`translate(${x % gridSize} ${y % gridSize}) scale(${k})`}>
-                        <path d="M24 0 L0 0 0 24" className="fx-grid-line" fill="none" />
+                        {look.shapes === 'classic'
+                            ? <circle cx={1} cy={1} r={1} className="fx-grid-dot" />
+                            : <path d="M24 0 L0 0 0 24" className="fx-grid-line" fill="none" />}
                     </pattern>
                     <radialGradient id="fx-vignette" cx="50%" cy="40%" r="75%">
                         <stop offset="0%" stopColor="var(--fx-bg-2)" stopOpacity="0.9" />
@@ -232,25 +251,29 @@ const FlowCanvas = React.forwardRef(function FlowCanvas({
                     ))}
                 </defs>
                 <rect className="fx-bg" width="100%" height="100%" />
-                <rect width="100%" height="100%" fill="url(#fx-vignette)" />
+                {look.shapes === 'classic' ? null : <rect width="100%" height="100%" fill="url(#fx-vignette)" />}
                 <rect width="100%" height="100%" fill="url(#fx-grid)" />
 
                 <g className="fx-scene" transform={`translate(${x},${y}) scale(${k})`}>
                     {layout.units.filter((u) => u.grouped).map((u) => (
                         <g key={`u${u.index}`} className="fx-unit">
-                            <rect className={`fx-unit-frame${u.embedded ? ' embedded' : ''}`} x={u.x} y={u.y} width={u.width} height={u.height} />
-                            <path className="fx-unit-bracket" d={cornerBrackets(u.x, u.y, u.width, u.height, 14)} />
-                            <text className="fx-unit-kind" x={u.x + 16} y={u.y + 15}>{u.kind === 'callback' ? 'CALLBACK' : u.kind === 'nested' ? 'NESTED FUNCTION' : u.kind === 'main' ? 'TOP LEVEL' : 'FUNCTION'}</text>
-                            <text className="fx-unit-title" x={u.x + 16} y={u.y + 29}>{u.name}</text>
+                            <rect className={`fx-unit-frame${u.embedded ? ' embedded' : ''}`} x={u.x} y={u.y} width={u.width} height={u.height}
+                                rx={look.shapes === 'classic' ? 10 : 0} />
+                            {look.tags ? <path className="fx-unit-bracket" d={cornerBrackets(u.x, u.y, u.width, u.height, 14)} /> : null}
+                            <text className="fx-unit-kind" x={u.x + 16} y={u.y + 16}>{u.kind === 'callback' ? 'CALLBACK' : u.kind === 'nested' ? 'NESTED FUNCTION' : u.kind === 'main' ? 'TOP LEVEL' : 'FUNCTION'}</text>
+                            <text className="fx-unit-title" x={u.x + 16} y={u.y + 32}>{u.name}</text>
                         </g>
                     ))}
 
                     {layout.edges.map((edge, i) => {
                         const unreachable = nodesById.get(edge.from) && nodesById.get(edge.from).unreachable;
                         const color = edgeColor(edge, unreachable);
-                        const d = edge.curve ? curvePath(edge.points[0], edge.points[edge.points.length - 1]) : tracePath(edge.points);
-                        const state = related ? (related.edges.has(i) ? ' hovered' : ' dimmed') : '';
-                        const lp = edge.label ? labelPoint(edge.points, edge.labelAt) : null;
+                        const d = edge.curve
+                            ? curvePath(edge.points[0], edge.points[edge.points.length - 1])
+                            : (look.edges === 'smooth' ? smoothPath(edge.points) : tracePath(edge.points));
+                        const secondary = look.faintSecondary && (edge.kind === 'exception' || edge.kind === 'abrupt' || edge.kind === 'callback');
+                        const state = (related ? (related.edges.has(i) ? ' hovered' : ' dimmed') : '') + (secondary ? ' secondary' : '');
+                        const lp = !edge.label ? null : (look.chips ? labelPoint(edge.points, edge.labelAt) : (secondary ? null : edge.labelPos));
                         const lc = labelColor(edge.label) || color;
                         const text = (edge.label === 'then return' ? 'return' : String(edge.label || '')).toUpperCase();
                         const tw = text.length * 6.4 + 10;
@@ -262,7 +285,13 @@ const FlowCanvas = React.forwardRef(function FlowCanvas({
                                 {packets && !unreachable && edge.kind !== 'callback' ? (
                                     <path className="fx-packet" d={d} style={{ d: `path("${d}")`, animationDelay: `${-(i % 7) * 0.2}s` }} stroke={`var(--fx-${color})`} />
                                 ) : null}
-                                {lp && fits ? (
+                                {lp && !look.chips ? (
+                                    <text className="fx-edge-text" x={lp[0]} y={lp[1]} textAnchor={edge.labelAlign === 'end' ? 'end' : 'start'}
+                                        fill={`var(--fx-${labelColor(edge.label) || 'muted'})`}>
+                                        {edge.label.charAt(0).toUpperCase() + edge.label.slice(1)}
+                                    </text>
+                                ) : null}
+                                {lp && fits && look.chips ? (
                                     <g className="fx-edge-label" transform={`translate(${lp[0]},${lp[1]})${edge.labelAt === 'lane' ? ' rotate(-90)' : ''}`}>
                                         <rect x={-tw / 2} y={-8} width={tw} height={16} rx={2} stroke={`var(--fx-${lc})`} />
                                         <text textAnchor="middle" y={3.5} fill={`var(--fx-${lc})`}>{text}</text>
@@ -278,16 +307,18 @@ const FlowCanvas = React.forwardRef(function FlowCanvas({
                         const finallyEnd = node.kind === 'junction' && node.meta && node.meta.subtype === 'finallyEnd';
                         const colorKey = node.unreachable ? 'muted' : (finallyEnd ? 'try' : KIND_COLOR[node.kind] || 'process');
                         const color = colorKey === 'muted' ? 'var(--fx-muted)' : `var(--fx-${colorKey})`;
-                        const shape = nodeShape(node.kind, placed.width, placed.height, node.meta);
-                        const leftAligned = node.kind === 'process' && placed.lines.length > 1;
+                        const classic = look.shapes === 'classic';
+                        const symbol = classic ? classicShape(node.kind, placed.width, placed.height, node.meta || {}) : { outline: nodeShape(node.kind, placed.width, placed.height, node.meta) };
+                        const shape = symbol.outline;
+                        const leftAligned = node.kind === 'process' && placed.lines.length > 1 && !(node.meta && node.meta.declaration);
                         const textX = leftAligned ? 16 : placed.width / 2;
                         const textTop = (placed.height - placed.lines.length * LINE_HEIGHT) / 2 + LINE_HEIGHT * 0.72;
                         let tag = KIND_TAG[node.kind];
                         if (node.kind === 'decision' && node.meta && node.meta.subtype === 'switch') tag = 'SWITCH';
                         if (node.kind === 'start' && node.meta && node.meta.fnKind === 'callback') tag = 'CALLBACK';
                         if (node.kind === 'process' && node.meta && node.meta.declaration) tag = 'DEF';
-                        if (finallyEnd || node.kind === 'junction' || node.kind === 'end') tag = null;
-                        const line = nodeLines[placed.id];
+                        if (finallyEnd || node.kind === 'junction' || node.kind === 'end' || !look.tags) tag = null;
+                        const line = look.lineNumbers ? nodeLines[placed.id] : undefined;
                         const state = [
                             node.unreachable ? 'unreachable' : '',
                             related ? (related.nodes.has(placed.id) ? 'hovered' : 'dimmed') : '',
@@ -301,8 +332,11 @@ const FlowCanvas = React.forwardRef(function FlowCanvas({
                                 onMouseMove={(e) => { if (tooltip) showTooltip(e, placed.id); }}
                                 onMouseLeave={() => { setHovered(null); hideTooltip(); }}>
                                 <g className={animate ? 'fx-appear' : undefined} style={{ animationDelay: `${Math.min(placed.rank, 30) * 28}ms` }}>
-                                    <path d={shape} fill="var(--fx-bg)" />
-                                    <path className="fx-shape" d={shape} fill={color} stroke={color} style={{ fillOpacity: 'var(--fx-fill-alpha)' }} />
+                                    {classic ? null : <path d={shape} fill="var(--fx-bg)" />}
+                                    {classic
+                                        ? <path className="fx-shape" d={shape} stroke={color} />
+                                        : <path className="fx-shape" d={shape} fill={color} stroke={color} style={{ fillOpacity: 'var(--fx-fill-alpha)' }} />}
+                                    {symbol.detail ? <path className="fx-detail" d={symbol.detail} /> : null}
                                     {placed.lines.map((l, i) => (
                                         <text key={i} className="fx-text" x={textX} y={textTop + i * LINE_HEIGHT} textAnchor={leftAligned ? 'start' : 'middle'}>{l}</text>
                                     ))}
@@ -313,7 +347,10 @@ const FlowCanvas = React.forwardRef(function FlowCanvas({
                                         </g>
                                     ) : null}
                                     {line ? <text className="fx-line-no" x={placed.width - 6} y={-4} textAnchor="end">L{line}</text> : null}
-                                    {node.async ? (
+                                    {node.async && classic ? (
+                                        <text className="fx-async" x={placed.width - 6} y={placed.height - 5} textAnchor="end">await</text>
+                                    ) : null}
+                                    {node.async && !classic ? (
                                         <g className="fx-badge" transform={`translate(${placed.width - 46},${placed.height - 5})`}>
                                             <rect width={40} height={10} stroke="var(--fx-async)" />
                                             <text x={20} y={7.5} textAnchor="middle" fill="var(--fx-async)">AWAIT</text>
@@ -321,7 +358,9 @@ const FlowCanvas = React.forwardRef(function FlowCanvas({
                                     ) : null}
                                 </g>
                                 {selectedId === placed.id ? (
-                                    <path className="fx-reticle" d={cornerBrackets(-7, -7, placed.width + 14, placed.height + 14, 9)} />
+                                    look.tags
+                                        ? <path className="fx-reticle" d={cornerBrackets(-7, -7, placed.width + 14, placed.height + 14, 9)} />
+                                        : <rect className="fx-reticle" x={-6} y={-6} width={placed.width + 12} height={placed.height + 12} rx={8} />
                                 ) : null}
                                 {highlightId === placed.id ? (
                                     <rect className="fx-cursor" x={-5} y={-5} width={placed.width + 10} height={placed.height + 10} rx={4} />

@@ -10,9 +10,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
   - a layered (Sugiyama) layout made for control flow: DFS cycle removal, longest-path layering, barycenter crossing reduction and exact overlap removal by isotonic regression;
   - loops in a right gutter and exceptional flow in a left gutter (VEIL), with edges to the same target sharing one lane;
   - callback / nested function flows laid out as a tree to the right of their parent;
-  - SVG renderer with a **cyberpunk** style (neon chamfered panels, PCB-like traces with 45° bends, HUD tags and brackets, animated flow packets, scanlines) and a **minimal** style that follows the VS Code theme;
-  - animated zoom around the pointer, drag to pan, double-click to fit, minimap, focus mode on hover, HUD tooltip with highlighted code, selection reticle, cursor-sync highlight, gliding nodes and morphing traces while editing;
-  - self-contained SVG / PNG export.
+  - a straight main path (each node aligned on the child with the longest continuation, after Brandes & Köpf) and branches leaving conditions from their side vertices;
+  - SVG renderer with a **classic** style (default): ISO 5807 symbols, smooth curved arrows, short Yes / No labels, light / dark colours from the VS Code theme, faint secondary links highlighted on hover; and an optional **cyberpunk** style (neon panels, circuit-board traces, animated flow);
+  - animated zoom around the pointer, drag to pan, double-click to fit, minimap, focus mode on hover, tooltip with highlighted code, selection outline, cursor-sync highlight, gliding nodes and morphing arrows while editing;
+  - self-contained SVG / PNG export (colours resolved).
 - `flowchartGenerator.style` and `flowchartGenerator.animations` settings.
 - Layout tests that check invariants (no overlap, attached and orthogonal edges, nodes inside their frame) on hundreds of real-world functions.
 
@@ -21,7 +22,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Mermaid is only used for text export (copy / Markdown); flowcharts saved by older versions are converted automatically.
 
 ### Removed
-- `flowchartGenerator.theme` (Mermaid themes), replaced by `flowchartGenerator.style`.
+- `flowchartGenerator.theme` (Mermaid themes), replaced by `flowchartGenerator.style` (`classic` or `cyberpunk`).
 
 ## [2.2.0] - 2026-11-04
 

@@ -1,7 +1,7 @@
 {
   "name": "flowchartgenerator",
   "displayName": "Flowchart Generator",
-  "description": "Turn JavaScript and TypeScript into interactive, beautifully rendered flowcharts — and flowcharts back into code. Own layout engine, cyberpunk style, live editing.",
+  "description": "Turn JavaScript and TypeScript into clear, interactive flowcharts — and flowcharts back into code. Own layout engine, classic flowchart symbols, live editing.",
   "version": "3.0.0",
   "publisher": "GeneratedFlowChart",
   "author": {
@@ -155,20 +155,20 @@
         "flowchartGenerator.style": {
           "type": "string",
           "enum": [
-            "cyberpunk",
-            "minimal"
+            "classic",
+            "cyberpunk"
           ],
           "enumDescriptions": [
-            "Neon panels, glowing PCB-like traces and animated flow on a dark grid",
-            "Sober colours that follow the VS Code theme"
+            "Classic flowchart symbols (ISO 5807), smooth curved arrows, colours that follow the VS Code light / dark theme",
+            "Neon panels, circuit-board traces and animated flow on a dark grid"
           ],
-          "default": "cyberpunk",
+          "default": "classic",
           "description": "Visual style of the flowchart renderer."
         },
         "flowchartGenerator.animations": {
           "type": "boolean",
           "default": true,
-          "description": "Animate the flow along edges and the appearance of nodes (also disabled when the OS asks for reduced motion)."
+          "description": "Animate node appearance, layout changes while editing and (cyberpunk style) the flow along edges. Also disabled when the OS asks for reduced motion."
         },
         "flowchartGenerator.maxLabelLength": {
           "type": "number",

@@ -7,14 +7,20 @@
  *
  *  1. Cycle removal     DFS from the start node; back edges are the loops.
  *  2. Layering          Longest path over the acyclic graph (top → bottom).
- *  3. Normalisation     Long forward edges get dummy nodes so they bend around nodes.
- *  4. Ordering          DFS order ("yes" left of "no"), then barycenter sweeps.
- *  5. Coordinates       Per layer, nodes go to the weighted median of their
- *                       neighbours, overlaps are removed optimally with an
- *                       isotonic regression (pool-adjacent-violators), several sweeps.
- *  6. Routing           PCB-like orthogonal traces with chamfered bends. As advised
- *                       for CFGs (VEIL, 2025), loops run in a gutter on one side
- *                       (right) and exceptional flow in a gutter on the other (left).
+ *  3. Spine             Every node picks the child leading to the longest
+ *                       continuation; those links get a heavy weight so the main
+ *                       path is a straight vertical line (the "vertical alignment"
+ *                       idea of Brandes & Köpf, used by dagre).
+ *  4. Normalisation     Long forward edges get dummy nodes so they bend around nodes.
+ *  5. Ordering          DFS order ("yes" left of "no"), then barycenter sweeps.
+ *  6. Coordinates       Weighted medians of the neighbours, overlaps removed
+ *                       exactly by isotonic regression (pool-adjacent-violators).
+ *  7. Routing           Branches leave a condition from its side vertices, the
+ *                       main path from the bottom. Loops run in a gutter on the
+ *                       right and exceptional flow in a gutter on the left (VEIL,
+ *                       2025), entering their target from the side when nothing is
+ *                       in the way. Routes are orthogonal polylines; renderers
+ *                       draw them with rounded corners or curves.
  *
  * Everything is computed in an abstract (u = across layers, v = along the flow)
  * space, then mapped to x / y, so the same code handles top-down and left-right.
@@ -24,18 +30,19 @@ const { displayLines, isNormalEdge, isEmbeddedUnit, edgeLabel, labelOptions } = 
 
 const DEFAULTS = {
     direction: 'TD',
-    nodeGap: 34,            // between nodes of a layer
-    layerGap: 56,           // between layers
-    gutterGap: 26,          // first gutter lane from the nodes
+    shapes: 'classic',      // 'classic' (ISO 5807 symbols) or 'compact'
+    nodeGap: 40,            // between nodes of a layer
+    layerGap: 46,           // between layers
+    gutterGap: 28,          // first gutter lane from the nodes
     laneGap: 12,            // between gutter lanes
     unitGap: 90,            // between flows (functions / callbacks)
     unitPadding: 28,
-    unitTitle: 30,
+    unitTitle: 34,
     sweeps: 8,
-    lineHeight: 17,
-    fontSize: 12.5,
-    titleFontSize: 12,
-    maxRowWidth: 1900
+    lineHeight: 18,
+    fontSize: 13,
+    maxRowWidth: 1900,
+    spineWeight: 16
 };
 
 /** Rough text width when no measuring function is given (tests, Node). */
@@ -47,24 +54,74 @@ function approxMeasure(text, fontSize = DEFAULTS.fontSize) {
 /* Node sizes                                                                 */
 /* ------------------------------------------------------------------------- */
 
-const PADDING = {
+const COMPACT_PADDING = {
     start: [18, 9], end: [16, 8], process: [16, 11], decision: [30, 11], loop: [24, 11],
     return: [18, 10], throw: [22, 10], try: [16, 8], catch: [16, 8], finally: [16, 8], junction: [10, 8]
 };
 
+/**
+ * Size of a node so that its text fits inside its symbol.
+ * Classic symbols (ISO 5807): terminator, process, decision diamond,
+ * preparation hexagon (loops), predefined process (try / catch / definitions).
+ */
 function nodeBox(node, labels, measure, opts) {
     const lines = displayLines(node, labels);
-    const textWidth = Math.max(...lines.map((l) => measure(l, opts.fontSize)), 0);
-    const [px, py] = PADDING[node.kind] || PADDING.process;
-    let width = textWidth + px * 2;
-    let height = lines.length * opts.lineHeight + py * 2;
-    if (node.kind === 'junction' && !(node.meta && node.meta.subtype === 'finallyEnd')) {
-        const size = Math.max(30, textWidth + 18);
-        width = size;
-        height = 30;
+    const w = Math.max(...lines.map((l) => measure(l, opts.fontSize)), 0);
+    const h = lines.length * opts.lineHeight;
+    const meta = node.meta || {};
+    let width;
+    let height;
+    if (opts.shapes === 'classic') {
+        switch (node.kind) {
+            case 'decision': {
+                // Text box w × h inside a diamond of aspect a: H ≥ h + w / a.
+                const a = 2.1;
+                height = Math.max(56, h + w / a + 18);
+                width = Math.max(120, height * a);
+                break;
+            }
+            case 'loop': {
+                height = h + 20;
+                width = w + height + 28;
+                break;
+            }
+            case 'start':
+            case 'end':
+            case 'return':
+                height = h + 16;
+                width = Math.max(84, w + height + 18);
+                break;
+            case 'junction':
+                if (meta.subtype === 'finallyEnd') {
+                    height = h + 10;
+                    width = w + height + 10;
+                } else {
+                    width = 34;
+                    height = 34;
+                }
+                break;
+            case 'try':
+            case 'catch':
+            case 'finally':
+                height = h + 18;
+                width = w + 52;
+                break;
+            default:
+                height = h + 20;
+                width = w + (meta.declaration ? 52 : 30);
+        }
+        width = Math.max(width, 64);
+    } else {
+        const [px, py] = COMPACT_PADDING[node.kind] || COMPACT_PADDING.process;
+        width = w + px * 2;
+        height = h + py * 2;
+        if (node.kind === 'junction' && meta.subtype !== 'finallyEnd') {
+            width = Math.max(30, w + 18);
+            height = 30;
+        }
+        if (node.kind === 'start' || node.kind === 'end') width = Math.max(width, 74);
+        width = Math.max(width, node.kind === 'decision' ? 110 : 52);
     }
-    if (node.kind === 'start' || node.kind === 'end') width = Math.max(width, 74);
-    width = Math.max(width, node.kind === 'decision' ? 110 : 52);
     return { lines, width: Math.ceil(width), height: Math.ceil(height) };
 }
 
@@ -105,7 +162,6 @@ function weightedMedian(values) {
     for (let i = 0; i < sorted.length; i++) {
         acc += sorted[i].weight;
         if (acc >= total / 2) {
-            // Average the two middle values when the median falls between them.
             if (acc === total / 2 && i + 1 < sorted.length) return (sorted[i].value + sorted[i + 1].value) / 2;
             return sorted[i].value;
         }
@@ -169,20 +225,20 @@ function layoutUnit(graph, unitIndex, ctx) {
     const queue = nodes.filter((n) => inDeg.get(n.id) === 0).map((n) => n.id);
     const fwdOut = new Map(nodes.map((n) => [n.id, []]));
     forward.forEach((e) => fwdOut.get(e.from).push(e));
+    const topo = [];
     while (queue.length) {
         const id = queue.shift();
+        topo.push(id);
         for (const e of fwdOut.get(id)) {
             rank.set(e.to, Math.max(rank.get(e.to), rank.get(id) + 1));
             inDeg.set(e.to, inDeg.get(e.to) - 1);
             if (inDeg.get(e.to) === 0) queue.push(e.to);
         }
     }
-    // The end node closes the flow.
     if (ids.has(unit.endId)) {
         const maxRank = Math.max(...nodes.filter((n) => n.id !== unit.endId).map((n) => rank.get(n.id)), 0);
         rank.set(unit.endId, Math.max(rank.get(unit.endId), maxRank + 1));
     }
-    // Pull nodes with a single successor down next to it (shorter edges, e.g. hoisted code).
     for (const n of [...nodes].reverse()) {
         const succ = fwdOut.get(n.id).filter((e) => isNormalEdge(e));
         const preds = forward.filter((e) => e.to === n.id);
@@ -191,7 +247,32 @@ function layoutUnit(graph, unitIndex, ctx) {
         }
     }
 
-    // 3. Normalisation: dummy chains for long normal forward edges. Exceptional edges
+    // 3. Spine: each node prefers the child with the longest continuation.
+    const height = new Map(nodes.map((n) => [n.id, 0]));
+    for (const id of [...topo].reverse()) {
+        for (const e of fwdOut.get(id)) {
+            if (isNormalEdge(e)) height.set(id, Math.max(height.get(id), height.get(e.to) + 1));
+        }
+    }
+    const dfsIndex = new Map(dfsOrder.map((id, i) => [id, i]));
+    const spineChild = new Map();
+    for (const n of nodes) {
+        const candidates = fwdOut.get(n.id).filter((e) => isNormalEdge(e) && rank.get(e.to) > rank.get(n.id));
+        if (!candidates.length) continue;
+        candidates.sort((a, b) => height.get(b.to) - height.get(a.to) || branchRank(a) - branchRank(b));
+        spineChild.set(n.id, candidates[0]);
+    }
+    const spine = new Set();
+    const claimed = new Set();
+    for (const id of [...dfsOrder]) {
+        const e = spineChild.get(id);
+        if (e && !claimed.has(e.to)) {
+            spine.add(e);
+            claimed.add(e.to);
+        }
+    }
+
+    // 4. Normalisation: dummy chains for long normal forward edges. Exceptional edges
     //    are routed in the left gutter and do not take part in the ordering.
     const layers = [];
     const put = (id, r) => {
@@ -209,7 +290,7 @@ function layoutUnit(graph, unitIndex, ctx) {
         const chain = [e.from];
         for (let r = r0 + 1; r < r1; r++) {
             const id = `__d${dummyCount++}`;
-            vnodes.set(id, { id, dummy: true, su: 2, sv: 0, rank: r });
+            vnodes.set(id, { id, dummy: true, su: 2, sv: 0, rank: r, source: e.from });
             put(id, r);
             chain.push(id);
         }
@@ -218,32 +299,28 @@ function layoutUnit(graph, unitIndex, ctx) {
     }
     const up = new Map([...vnodes.keys()].map((id) => [id, []]));
     const down = new Map([...vnodes.keys()].map((id) => [id, []]));
-    // Exceptional edges weakly attract their handler, so a catch sits under its try block.
     for (const e of forward) {
         if (isNormalEdge(e)) continue;
         down.get(e.from).push({ id: e.to, weight: 0.35 });
         up.get(e.to).push({ id: e.from, weight: 0.35 });
     }
-    for (const { chain } of chains) {
+    for (const { edge, chain } of chains) {
+        const isSpine = spine.has(edge);
         for (let i = 0; i + 1 < chain.length; i++) {
-            const weight = vnodes.get(chain[i]).dummy || vnodes.get(chain[i + 1]).dummy ? 4 : 1;
+            const dummy = vnodes.get(chain[i]).dummy || vnodes.get(chain[i + 1]).dummy;
+            const weight = isSpine ? opts.spineWeight : (dummy ? 4 : 1);
             down.get(chain[i]).push({ id: chain[i + 1], weight });
             up.get(chain[i + 1]).push({ id: chain[i], weight });
         }
     }
 
-    // 4. Ordering: DFS discovery order first, then barycenter sweeps.
-    const dfsIndex = new Map(dfsOrder.map((id, i) => [id, i]));
+    // 5. Ordering: DFS discovery order first, then barycenter sweeps.
     const order = new Map();
     layers.forEach((layer) => {
-        layer.sort((a, b) => {
-            const ka = vnodes.get(a).dummy ? (dfsIndex.get(chainSource(a, chains)) ?? 0) + 0.5 : dfsIndex.get(a) ?? 0;
-            const kb = vnodes.get(b).dummy ? (dfsIndex.get(chainSource(b, chains)) ?? 0) + 0.5 : dfsIndex.get(b) ?? 0;
-            return ka - kb;
-        });
+        const key = (id) => (vnodes.get(id).dummy ? (dfsIndex.get(vnodes.get(id).source) ?? 0) + 0.5 : dfsIndex.get(id) ?? 0);
+        layer.sort((a, b) => key(a) - key(b));
         layer.forEach((id, i) => order.set(id, i));
     });
-    // Initial DFS order already puts "yes" left of "no"; sweeps reduce crossings.
     const crossings = () => countCrossings(layers, down, order);
     let best = layers.map((l) => [...l]);
     let bestCrossings = crossings();
@@ -272,7 +349,7 @@ function layoutUnit(graph, unitIndex, ctx) {
         layer.forEach((id, i) => order.set(id, i));
     });
 
-    // 5. Coordinates across layers (u): medians + isotonic overlap removal.
+    // 6. Coordinates across layers (u): medians + isotonic overlap removal.
     const pos = new Map();
     layers.forEach((layer) => {
         let u = 0;
@@ -285,7 +362,7 @@ function layoutUnit(graph, unitIndex, ctx) {
     const gapBetween = (a, b) => {
         const va = vnodes.get(a);
         const vb = vnodes.get(b);
-        const gap = va.dummy && vb.dummy ? 14 : (va.dummy || vb.dummy ? opts.nodeGap / 2 + 6 : opts.nodeGap);
+        const gap = va.dummy && vb.dummy ? 16 : (va.dummy || vb.dummy ? opts.nodeGap / 2 + 8 : opts.nodeGap);
         return va.su / 2 + vb.su / 2 + gap;
     };
     const relax = (layer, neighbours) => {
@@ -294,12 +371,15 @@ function layoutUnit(graph, unitIndex, ctx) {
             const m = weightedMedian(neighbours.get(id).map((n) => ({ value: pos.get(n.id), weight: n.weight })));
             return m === null ? pos.get(id) : m;
         });
-        const weights = layer.map((id) => (vnodes.get(id).dummy ? 2 : 1 + neighbours.get(id).length));
+        const weights = layer.map((id) => {
+            const ns = neighbours.get(id);
+            return (vnodes.get(id).dummy ? 2 : 1) + ns.reduce((s, n) => s + n.weight, 0);
+        });
         const gaps = layer.slice(1).map((id, i) => gapBetween(layer[i], id));
         placeWithGaps(desired, gaps, weights).forEach((u, i) => pos.set(layer[i], u));
     };
     const both = new Map([...vnodes.keys()].map((id) => [id, [...up.get(id), ...down.get(id)]]));
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 8; i++) {
         for (let r = 1; r < layers.length; r++) relax(layers[r], up);
         for (let r = layers.length - 2; r >= 0; r--) relax(layers[r], down);
     }
@@ -326,80 +406,100 @@ function layoutUnit(graph, unitIndex, ctx) {
         const cv = layerV[r].top + layerV[r].thickness / 2;
         placed.set(node.id, { cu, cv, su: b.su, sv: b.sv, rank: r, lines: b.lines, width: b.width, height: b.height });
     }
-
-    // 6. Routing.
-    const routes = [];
-    const channelUse = new Map();
-    const channelOffset = (r, key) => {
-        if (!channelUse.has(r)) channelUse.set(r, []);
-        const used = channelUse.get(r);
-        let index = used.indexOf(key);
-        if (index < 0) {
-            used.push(key);
-            index = used.length - 1;
-        }
-        return index;
+    const realInLayer = (r) => layers[r].filter((id) => !vnodes.get(id).dummy);
+    /** No real node beyond `id` on that side of its layer: an edge may leave / enter by the side. */
+    const isOutermost = (id, side) => {
+        const p = placed.get(id);
+        return realInLayer(p.rank).every((other) => other === id
+            || (side === 'right' ? placed.get(other).cu < p.cu : placed.get(other).cu > p.cu));
     };
+
+    // 7. Routing.
+    const routes = [];
     const channelMid = (r) => layerV[r].top + layerV[r].thickness + opts.layerGap / 2;
+    const channelAbove = (r) => (r === 0 ? layerV[0].top - opts.layerGap / 2 : channelMid(r - 1));
+    const branching = (id) => {
+        const node = byId.get(id);
+        return node.kind === 'decision' || node.kind === 'loop';
+    };
 
     for (const { edge, chain } of chains) {
         const from = placed.get(edge.from);
         const to = placed.get(edge.to);
-        const node = byId.get(edge.from);
+        const next = chain[1];
+        const nextU = vnodes.get(next).dummy ? pos.get(next) - minU : to.cu;
         const points = [];
-        // Exit port: decisions send "yes" from the left half and "no" from the right half.
-        let exitU = from.cu;
-        if (node.kind === 'decision' || node.kind === 'loop') {
-            const branches = edges.filter((e) => e.from === edge.from && isNormalEdge(e) && !back.has(e)).sort((a, b) => branchRank(a) - branchRank(b));
-            if (branches.length > 1) {
-                const i = branches.indexOf(edge);
-                exitU = from.cu - from.su / 4 + (from.su / 2) * (i / (branches.length - 1));
+        let labelPos = null;
+        let labelAlign = 'start';
+        // The vertical part must clear the symbol, and nothing of the layer may sit on the way.
+        const clear = Math.abs(nextU - from.cu) > from.su / 2 + 10 && realInLayer(from.rank).every((other) => {
+            if (other === edge.from) return true;
+            const o = placed.get(other);
+            const [loU, hiU] = nextU < from.cu ? [nextU - 6, from.cu] : [from.cu, nextU + 6];
+            return o.cu + o.su / 2 < loU || o.cu - o.su / 2 > hiU;
+        });
+        const sideExit = branching(edge.from) && !spine.has(edge) && clear;
+        if (sideExit) {
+            // Classic flowchart: secondary branches leave from a side vertex of the symbol.
+            const dir = nextU < from.cu ? -1 : 1;
+            const port = [from.cu + dir * from.su / 2, from.cv];
+            points.push(port, [nextU, from.cv]);
+            labelPos = [port[0] + dir * 8, port[1] - 7];
+            labelAlign = dir < 0 ? 'end' : 'start';
+        } else {
+            points.push([from.cu, from.cv + from.sv / 2]);
+            labelPos = [from.cu + 7, from.cv + from.sv / 2 + 13];
+            if (Math.abs(nextU - from.cu) > 1) {
+                const mid = channelMid(from.rank);
+                points.push([from.cu, mid], [nextU, mid]);
+                // A branch that turns carries its label on its horizontal part, so two
+                // branches leaving from the bottom never stack their labels.
+                if (!spine.has(edge)) {
+                    const dir = nextU < from.cu ? -1 : 1;
+                    labelPos = [from.cu + dir * 14, mid - 6];
+                    labelAlign = dir < 0 ? 'end' : 'start';
+                }
             }
         }
-        points.push([exitU, from.cv + from.sv / 2]);
-        let currentU = exitU;
+        // Within a pixel of the source: stay perfectly straight.
+        let currentU = sideExit || Math.abs(nextU - from.cu) > 1 ? nextU : from.cu;
         for (let i = 1; i < chain.length; i++) {
             const id = chain[i];
-            const r = vnodes.get(chain[i - 1]).rank;
-            const targetU = vnodes.get(id).dummy ? pos.get(id) - minU : to.cu;
+            const vn = vnodes.get(id);
+            const targetU = vn.dummy ? pos.get(id) - minU : to.cu;
             if (Math.abs(targetU - currentU) > 1) {
-                const lane = channelOffset(r, `${edge.from}->${edge.to}`);
-                const mid = channelMid(r) + (lane % 3 - 1) * 6;
+                const mid = channelMid(vnodes.get(chain[i - 1]).rank);
                 points.push([currentU, mid], [targetU, mid]);
                 currentU = targetU;
             }
-            // Within a pixel: stay perfectly straight.
-            if (vnodes.get(id).dummy) {
-                const vr = vnodes.get(id).rank;
-                points.push([currentU, layerV[vr].top], [currentU, layerV[vr].top + layerV[vr].thickness]);
+            if (vn.dummy) {
+                points.push([currentU, layerV[vn.rank].top], [currentU, layerV[vn.rank].top + layerV[vn.rank].thickness]);
             }
         }
         points.push([currentU, to.cv - to.sv / 2]);
-        routes.push({ edge, points: simplify(points), kind: edge.kind || 'normal', back: false });
+        routes.push({ edge, points: simplify(points), kind: 'normal', back: false, labelPos, labelAlign });
     }
 
     const rightEdges = edges.filter((e) => back.has(e) && isNormalEdge(e));
     const adjacent = (e) => !back.has(e) && placed.get(e.to).rank === placed.get(e.from).rank + 1;
     const leftEdges = edges.filter((e) => !isNormalEdge(e) && !adjacent(e));
-    // Exceptional edges between consecutive layers go straight through the channel.
     for (const e of edges.filter((x) => !isNormalEdge(x) && adjacent(x))) {
         const a = placed.get(e.from);
         const b = placed.get(e.to);
         const exitU = a.cu - a.su / 4;
         const mid = channelMid(a.rank) + 5;
         const points = [[exitU, a.cv + a.sv / 2], [exitU, mid], [b.cu - b.su / 4, mid], [b.cu - b.su / 4, b.cv - b.sv / 2]];
-        routes.push({ edge: e, points: simplify(points), kind: e.kind, back: false });
+        routes.push({ edge: e, points: simplify(points), kind: e.kind, back: false, labelPos: null });
     }
-    // Gutters: loops on the right, exceptional flow on the left (VEIL). Edges reach
-    // their gutter through the channels between layers, so they never cross a node,
-    // and edges sharing a target share a lane (a "bus", like a PCB trace).
-    const channelAbove = (r) => (r === 0 ? layerV[0].top - opts.layerGap / 2 : channelMid(r - 1));
+
+    // Gutters: edges sharing a target share a lane (a "bus"). An edge leaves / enters
+    // by the side of a node when no other node of its layer is in the way, otherwise
+    // through the channel between layers.
     const gutter = (list, side) => {
         const groups = new Map();
         for (const e of list) {
-            const key = e.to;
-            if (!groups.has(key)) groups.set(key, []);
-            groups.get(key).push(e);
+            if (!groups.has(e.to)) groups.set(e.to, []);
+            groups.get(e.to).push(e);
         }
         const spans = [...groups.values()].map((group) => {
             const ranks = group.flatMap((e) => [placed.get(e.from).rank, placed.get(e.to).rank]);
@@ -413,35 +513,53 @@ function layoutUnit(graph, unitIndex, ctx) {
             sp.lane = lane;
         }
         const result = [];
+        const sign = side === 'right' ? 1 : -1;
         for (const sp of spans) {
             const extent = [...placed.values()].filter((p) => p.rank >= sp.lo && p.rank <= sp.hi);
             const laneU = side === 'right'
                 ? Math.max(...extent.map((p) => p.cu + p.su / 2)) + opts.gutterGap + sp.lane * opts.laneGap
                 : Math.min(...extent.map((p) => p.cu - p.su / 2)) - opts.gutterGap - sp.lane * opts.laneGap;
-            const sign = side === 'right' ? 1 : -1;
             sp.group.forEach((e, index) => {
                 const a = placed.get(e.from);
                 const b = placed.get(e.to);
-                const exitU = a.cu + sign * a.su / 4;
-                const entryU = b.cu + sign * b.su / 4;
-                const below = channelMid(a.rank) + sign * 4;
-                const above = channelAbove(b.rank) - sign * 4;
-                const points = [[exitU, a.cv + a.sv / 2], [exitU, below], [laneU, below], [laneU, above], [entryU, above], [entryU, b.cv - b.sv / 2]];
-                // A bus shows its label once, where it enters its target.
-                result.push({ edge: e, points: simplify(points), kind: e.kind || 'normal', back: side === 'right', gutter: side, showLabel: index === 0, labelAt: 'lane' });
+                const points = [];
+                let labelPos = null;
+                let labelAlign = side === 'right' ? 'start' : 'end';
+                if (isOutermost(e.from, side)) {
+                    const port = [a.cu + sign * a.su / 2, a.cv];
+                    points.push(port, [laneU, a.cv]);
+                    labelPos = [port[0] + sign * 8, port[1] - 7];
+                } else {
+                    const exitU = a.cu + sign * a.su / 4;
+                    const below = channelMid(a.rank) + sign * 4;
+                    points.push([exitU, a.cv + a.sv / 2], [exitU, below], [laneU, below]);
+                    labelPos = [exitU + 6, a.cv + a.sv / 2 + 13];
+                    labelAlign = 'start';
+                }
+                if (isOutermost(e.to, side)) {
+                    points.push([laneU, b.cv], [b.cu + sign * b.su / 2, b.cv]);
+                } else {
+                    const entryU = b.cu + sign * b.su / 4;
+                    const above = channelAbove(b.rank) - sign * 4;
+                    points.push([laneU, above], [entryU, above], [entryU, b.cv - b.sv / 2]);
+                }
+                result.push({
+                    edge: e, points: simplify(points), kind: e.kind || 'normal', back: side === 'right', gutter: side,
+                    labelPos: index === 0 || isNormalEdge(e) ? labelPos : null, labelAlign
+                });
             });
         }
         return result;
     };
     routes.push(...gutter(rightEdges, 'right'), ...gutter(leftEdges, 'left'));
 
-    // Bounds of everything (gutters included).
+    // Bounds of everything (gutters and labels included).
     let lo = 0;
     let hi = maxU - minU;
     for (const route of routes) {
         for (const [u] of route.points) {
-            lo = Math.min(lo, u - 10);
-            hi = Math.max(hi, u + 10);
+            lo = Math.min(lo, u - 12);
+            hi = Math.max(hi, u + 12);
         }
     }
     const shift = -lo;
@@ -454,22 +572,19 @@ function layoutUnit(graph, unitIndex, ctx) {
     const edgesOut = routes.map((route) => ({
         from: route.edge.from,
         to: route.edge.to,
-        label: route.showLabel === false ? '' : edgeLabel(route.edge),
-        labelAt: route.labelAt || 'start',
+        label: edgeLabel(route.edge),
+        labelPos: route.labelPos ? map(route.labelPos) : null,
+        labelAlign: horizontal ? 'start' : route.labelAlign,
         kind: route.kind,
         back: route.back,
         gutter: route.gutter,
+        spine: spine.has(route.edge),
         edgeIndex: graph.edges.indexOf(route.edge),
         points: route.points.map(map)
     }));
     const width = horizontal ? totalV : hi - lo;
-    const height = horizontal ? hi - lo : totalV;
-    return { unitIndex, name: unit.name, kind: unit.kind, nodes: nodesOut, edges: edgesOut, width, height, crossings: bestCrossings };
-}
-
-function chainSource(dummyId, chains) {
-    const chain = chains.find((c) => c.chain.includes(dummyId));
-    return chain ? chain.chain[0] : undefined;
+    const heightOut = horizontal ? hi - lo : totalV;
+    return { unitIndex, name: unit.name, kind: unit.kind, nodes: nodesOut, edges: edgesOut, width, height: heightOut, crossings: bestCrossings };
 }
 
 /** Number of crossings between consecutive layers (O(E²) per layer, graphs are small). */
@@ -516,10 +631,11 @@ function simplify(points) {
  * @param {Object} [options]
  * @param {(text: string, fontSize: number) => number} [options.measure]  Text width measuring function
  * @param {import('./graph').LabelOptions} [options.labels]
+ * @param {'classic' | 'compact'} [options.shapes]
  * @returns {{ width: number, height: number, units: any[], nodes: Record<string, any>, edges: any[] }}
  */
 function layoutGraph(graph, options = {}) {
-    const opts = { ...DEFAULTS, ...options, direction: (options.direction || graph.direction) === 'LR' ? 'LR' : 'TD' };
+    const opts = { ...DEFAULTS, ...stripUndefined(options), direction: (options.direction || graph.direction) === 'LR' ? 'LR' : 'TD' };
     const ctx = { opts, labels: labelOptions(options.labels || {}), measure: options.measure || approxMeasure };
     const units = graph.units.map((_, i) => layoutUnit(graph, i, ctx));
     const grouped = units.length > 1;
@@ -532,11 +648,12 @@ function layoutGraph(graph, options = {}) {
     const title = grouped ? opts.unitTitle : 0;
     const boxes = units.map((u) => ({ w: u.width + pad * 2, h: u.height + pad * 2 + title }));
     const parentOf = new Map();
+    const nodeUnit = new Map(graph.nodes.map((n) => [n.id, n.unit]));
     for (const e of graph.edges) {
         if (e.kind !== 'callback') continue;
-        const from = graph.nodes.find((n) => n.id === e.from);
-        const to = graph.nodes.find((n) => n.id === e.to);
-        if (from && to && from.unit !== to.unit && !parentOf.has(to.unit)) parentOf.set(to.unit, from.unit);
+        const from = nodeUnit.get(e.from);
+        const to = nodeUnit.get(e.to);
+        if (from !== undefined && to !== undefined && from !== to && !parentOf.has(to)) parentOf.set(to, from);
     }
     const children = new Map(units.map((_, i) => [i, []]));
     parentOf.forEach((parent, child) => children.get(parent).push(child));
@@ -575,7 +692,13 @@ function layoutGraph(graph, options = {}) {
         const dx = ox + pad;
         const dy = oy + pad + title;
         for (const [id, n] of Object.entries(u.nodes)) nodes[id] = { ...n, x: n.x + dx, y: n.y + dy, unit: i };
-        for (const e of u.edges) edges.push({ ...e, points: e.points.map(([px, py]) => [px + dx, py + dy]) });
+        for (const e of u.edges) {
+            edges.push({
+                ...e,
+                points: e.points.map(([px, py]) => [px + dx, py + dy]),
+                labelPos: e.labelPos ? [e.labelPos[0] + dx, e.labelPos[1] + dy] : null
+            });
+        }
         return {
             index: i,
             name: u.name,
@@ -597,12 +720,16 @@ function layoutGraph(graph, options = {}) {
         const b = nodes[e.to];
         const start = [a.x + a.width, a.y + a.height / 2];
         const end = [b.x, b.y + b.height / 2];
-        edges.push({ from: e.from, to: e.to, label: e.label, labelAt: 'curve', kind: 'callback', edgeIndex: graph.edges.indexOf(e), points: [start, end], curve: true });
+        edges.push({ from: e.from, to: e.to, label: e.label, labelPos: null, kind: 'callback', edgeIndex: graph.edges.indexOf(e), points: [start, end], curve: true });
     }
 
     const width = Math.max(...unitsOut.map((u) => u.x + u.width), 0);
     const height = Math.max(...unitsOut.map((u) => u.y + u.height), 0);
     return { width, height, units: unitsOut, nodes, edges, direction: opts.direction };
+}
+
+function stripUndefined(object) {
+    return Object.fromEntries(Object.entries(object).filter(([, v]) => v !== undefined));
 }
 
 module.exports = { layoutGraph, placeWithGaps, countCrossings, approxMeasure, DEFAULTS };

@@ -6,7 +6,7 @@ const { EXTENSION_ID } = require('./constants');
 /**
  * @typedef {Object} FlowchartSettings
  * @property {'TD' | 'LR'} direction
- * @property {'cyberpunk' | 'minimal'} style
+ * @property {'classic' | 'cyberpunk'} style
  * @property {boolean} animations
  * @property {number} maxLabelLength
  * @property {boolean} mergeSequentialStatements
@@ -27,7 +27,7 @@ function getSettings() {
     const config = vscode.workspace.getConfiguration(EXTENSION_ID);
     return {
         direction: config.get('direction', 'TD') === 'LR' ? 'LR' : 'TD',
-        style: config.get('style', 'cyberpunk') === 'minimal' ? 'minimal' : 'cyberpunk',
+        style: config.get('style', 'classic') === 'cyberpunk' ? 'cyberpunk' : 'classic',
         animations: config.get('animations', true) !== false,
         maxLabelLength: clamp(config.get('maxLabelLength', 60), 10, 300),
         mergeSequentialStatements: config.get('mergeSequentialStatements', true),

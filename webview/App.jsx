@@ -7,7 +7,7 @@ const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform)
 
 export default function App() {
     const [diagrams, setDiagrams] = useState([]);
-    const [settings, setSettings] = useState({ style: 'cyberpunk', animate: true });
+    const [settings, setSettings] = useState({ style: 'classic', animate: true });
     const [focus, setFocus] = useState({ id: undefined, tick: 0, edit: false });
     const [received, setReceived] = useState(false);
     const [filter, setFilter] = useState(() => getState().filter || '');
@@ -58,7 +58,7 @@ export default function App() {
     }, [diagrams, filter]);
 
     return (
-        <div className="fc-app">
+        <div className={`fc-app style-${settings.style || 'classic'}`}>
             <header className="fc-header">
                 <div className="fc-brand">
                     <FlowIcon />
@@ -107,7 +107,7 @@ export default function App() {
                     <DiagramCard
                         key={diagram.id}
                         diagram={diagram}
-                        theme={settings.style || 'cyberpunk'}
+                        theme={settings.style || 'classic'}
                         animate={settings.animate !== false}
                         focused={focus.id === diagram.id}
                         focusTick={focus.tick}
