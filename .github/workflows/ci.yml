@@ -32,7 +32,7 @@ jobs:
       - name: Package VSIX
         run: npx vsce package --no-dependencies --out flowchart-generator.vsix
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: flowchart-generator-vsix
           path: flowchart-generator.vsix
