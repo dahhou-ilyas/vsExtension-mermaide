@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { generateCode } from '../src/core/codegen';
-import { updateNode, insertOnEdge, deleteNode, outgoingEdges, INSERTABLE } from '../src/core/graphEdit';
-import { edgeLabel, displayLines } from '../src/core/graph';
+import { updateNode, insertOnEdge, deleteNode, outgoingEdges, isEditable, INSERTABLE } from '../src/core/graphEdit';
+import { edgeLabel, displayLines, fullText } from '../src/core/graph';
 
 const KIND_NAMES = {
     start: 'Function',
@@ -85,6 +85,19 @@ export function Inspector({ graph, selectedId, onChange, onSelect }) {
             <div className="fc-inspector fc-inspector-empty">
                 <p><strong>Click a node</strong> to edit it, insert steps after it, or delete it.</p>
                 <p className="fc-muted">The code on the right is regenerated live from the chart.</p>
+            </div>
+        );
+    }
+
+    if (!isEditable(graph, node.id)) {
+        return (
+            <div className="fc-inspector">
+                <div className="fc-inspector-title">
+                    <span className={`fc-kind fc-kind-${node.kind}`}>{describeNode(node)}</span>
+                    <code>{graph.units[node.unit].name}</code>
+                </div>
+                <p className="fc-muted">This node belongs to an <strong>inline callback</strong>: its code lives inside another statement. Edit that statement to change it.</p>
+                <pre className="fc-readonly"><code>{fullText(node)}</code></pre>
             </div>
         );
     }

@@ -13,6 +13,9 @@ It also works in the other direction: **edit the chart and the code is regenerat
 ### Code → flowchart
 
 - **Accurate control flow**: `if / else if / else`, `switch` (with fall-through), `for`, `for…of`, `for…in`, `while`, `do…while`, `break` / `continue` (including labels), `return`, `throw`, `try / catch / finally`, `async` / `await`.
+- **Inline callbacks as their own flows**: `items.forEach(x => {…})`, `promise.then(…)`, `onClick={() => {…}}`, IIFEs and nested functions are drawn as separate, linked flows (nested callbacks up to a configurable depth). The statement shows the body folded (`=> {…}`), so it is not repeated.
+- **Precise exceptions**: like Soot's exceptional CFG, only statements that can throw (calls, `new`, `await`, `throw`, …) get an `error` edge to their `catch`. `return` and `throw` go through `finally`, and an explicit "end finally" node continues with `then return` / `rethrow`.
+- **Readable long code**: labels wrap on several lines instead of being cut, and very long code folds nested brackets innermost first (`fetch(url, { headers: {…}, retry: 3 })`). The full code is in every node's tooltip, and the **full labels** toggle shows it in the nodes.
 - **JavaScript, TypeScript, JSX and TSX**: functions, arrow functions, class methods, getters/setters, object methods, CommonJS exports and loose statements.
 - **Smart targeting**: select code, or just put the cursor inside a function. You can also click the **Flowchart** CodeLens above any function.
 - **Click to navigate**: every node is linked to its source range. Click a node to open and select the matching code.
@@ -48,6 +51,18 @@ It also works in the other direction: **edit the chart and the code is regenerat
 
 The test suite checks this end to end. Each sample function goes code → chart → code (and code → Mermaid text → code), and the original and regenerated versions are executed on the same inputs and must return the same results.
 
+#### Verified on real-world code
+
+The generator was also run on **11,345 functions** from webpack, ESLint, Mocha, Babel and Acorn:
+
+| Check | Result |
+| --- | --- |
+| Flowchart built without error | 11,345 / 11,345 |
+| Regenerated code is valid JavaScript | 11,341 / 11,345 (4 very irregular functions get an explicit message) |
+| Rebuilt as structured code (not a state machine) | 99.95 % |
+| Mermaid output accepted by Mermaid | 400 / 400 sampled diagrams |
+| code → Mermaid *text* → import → valid code | 3,127 / 3,147 (99.4 %) |
+
 ## Usage
 
 | Action | How |
@@ -76,6 +91,18 @@ The test suite checks this end to end. Each sample function goes code → chart 
 | Orange box | `try` / `catch` / `finally` |
 | Cyan border | Contains `await` |
 | Dashed grey box | Unreachable code |
+| Small orange pill "end finally" | End of a `finally` block |
+| Red dashed arrow `error` | This statement may throw, so control can go to the `catch` (or `finally`) |
+| Purple dashed arrow | `return` / `throw` passing through `finally`, then `then return` / `rethrow` |
+| Teal dotted arrow `callback` / `defines` | Statement → inline callback flow, or definition → nested function flow |
+
+### Callbacks, exceptions and long labels
+
+| Inline callbacks | Precise exceptions |
+| --- | --- |
+| ![Callbacks drawn as linked flows](media/v2.2/callbacks.png) | ![Exceptional control flow](media/v2.2/exceptions.png) |
+
+![Long labels: before (cut) and after (wrapped, nothing lost)](media/v2.2/labels-before-after.png)
 
 ## Settings
 
@@ -83,7 +110,13 @@ The test suite checks this end to end. Each sample function goes code → chart 
 | --- | --- | --- |
 | `flowchartGenerator.direction` | `TD` | Layout direction: `TD` (top to bottom) or `LR` (left to right). |
 | `flowchartGenerator.theme` | `auto` | `auto` follows VS Code; or `default`, `dark`, `forest`, `neutral`. |
-| `flowchartGenerator.maxLabelLength` | `60` | Characters shown in a node before truncation. |
+| `flowchartGenerator.labels.mode` | `wrap` | `wrap`: long code wraps on several lines and folds nested brackets when very long. `truncate`: labels are cut. |
+| `flowchartGenerator.labels.lineWidth` | `40` | Characters per line in node labels (wrap mode). |
+| `flowchartGenerator.labels.maxLines` | `4` | Lines per statement in node labels (wrap mode). |
+| `flowchartGenerator.maxLabelLength` | `60` | Characters per label in `truncate` mode. |
+| `flowchartGenerator.exceptions` | `detailed` | `detailed`: an `error` edge from every statement that may throw. `summary`: a single `try → catch` edge. |
+| `flowchartGenerator.callbacks.expand` | `true` | Draw inline callbacks as their own flows. |
+| `flowchartGenerator.callbacks.maxDepth` | `3` | How many levels of nested callbacks are expanded. |
 | `flowchartGenerator.mergeSequentialStatements` | `true` | Group consecutive simple statements into one block. |
 | `flowchartGenerator.maxStatementsPerBlock` | `4` | Maximum statements per grouped block. |
 | `flowchartGenerator.codeLens.enabled` | `true` | Show the **Flowchart** CodeLens above functions. |
@@ -97,8 +130,9 @@ VS Code 1.96 or newer. No other dependency: everything is bundled.
 
 ## Known limitations
 
-- Exceptional control flow is simplified: any statement inside `try` may jump to `catch`, which is drawn as a single `error` edge from `try`.
-- Callbacks passed inline (for example `items.forEach(x => …)`) appear as a single statement. Generate a flowchart for the callback itself to see its flow.
+- "May throw" is decided syntactically (calls, `new`, `await`, `yield`, tagged templates, `throw`). Property access on `null` is not considered, which keeps diagrams readable.
+- Callback flows are read-only in the editor: edit the statement that contains the callback instead.
+- `break` / `continue` that leave a `try` block with a `finally` are drawn going directly to their target.
 - Comments are not shown in the diagram, so they are not part of the regenerated code either. Review the diff before applying.
 - Generated code is laid out with 4-space indentation. Run your formatter afterwards if your project uses another style.
 - In state-machine mode, destructuring declarations and `for` / `try` blocks cannot be converted. Restructure the chart in that case.

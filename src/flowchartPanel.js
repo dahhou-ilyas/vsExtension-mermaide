@@ -4,7 +4,7 @@ const vscode = require('vscode');
 const crypto = require('crypto');
 const { VIEW_TYPE, MESSAGES } = require('./constants');
 const { ToWebview, FromWebview } = require('./shared/protocol');
-const { getSettings } = require('./config');
+const { getSettings, labelSettings } = require('./config');
 
 /**
  * Owns the single flowchart webview panel and its message protocol.
@@ -103,7 +103,7 @@ class FlowchartPanel {
         this.panel.webview.postMessage({
             type: ToWebview.STATE,
             diagrams: this.store.all(),
-            settings: { theme: settings.theme, maxLabelLength: settings.maxLabelLength },
+            settings: { theme: settings.theme, labels: labelSettings(settings) },
             focusId: this.focusId,
             editId: this.editId
         });

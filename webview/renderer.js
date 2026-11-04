@@ -37,7 +37,8 @@ export function renderMermaid(code, theme) {
             fontFamily: fontFamily(),
             // SVG text labels (no <foreignObject>) keep PNG export possible.
             htmlLabels: false,
-            flowchart: { htmlLabels: false, useMaxWidth: false, curve: 'basis', padding: 12, nodeSpacing: 40, rankSpacing: 48 }
+            // Labels are already wrapped by the extension: a wider wrapping width keeps Mermaid from re-wrapping them.
+            flowchart: { htmlLabels: false, useMaxWidth: false, curve: 'basis', padding: 12, nodeSpacing: 40, rankSpacing: 48, wrappingWidth: 480 }
         });
         const id = `flowchart-svg-${++counter}`;
         try {

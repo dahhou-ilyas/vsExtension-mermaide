@@ -9,7 +9,7 @@ export const clampZoom = (z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round
 /**
  * Renders one Mermaid definition, with zoom, drag-to-pan and clickable nodes.
  */
-export default function MermaidDiagram({ code, theme, zoom, onZoom, onNodeClick, svgRef, nodeLines, highlightNodeId, tooltip }) {
+export default function MermaidDiagram({ code, theme, zoom, onZoom, onNodeClick, svgRef, nodeLines, nodeTexts, highlightNodeId, tooltip }) {
     const viewportRef = useRef(null);
     const hostRef = useRef(null);
     const sizeRef = useRef(null);
@@ -46,7 +46,9 @@ export default function MermaidDiagram({ code, theme, zoom, onZoom, onNodeClick,
                     node.setAttribute('data-node', nodeId);
                     const line = nodeLines && nodeLines[nodeId];
                     const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-                    title.textContent = tooltip || (line ? `Line ${line} — click to open in the editor` : 'Click to open in the editor');
+                    const full = nodeTexts && nodeTexts[nodeId];
+                    const action = tooltip || (line ? `Line ${line} — click to open in the editor` : 'Click to open in the editor');
+                    title.textContent = full ? `${full}\n\n${action}` : action;
                     node.insertBefore(title, node.firstChild);
                     node.setAttribute('tabindex', '0');
                     node.setAttribute('role', 'button');

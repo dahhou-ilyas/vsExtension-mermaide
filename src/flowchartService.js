@@ -134,6 +134,12 @@ class FlowchartService {
                 maxLabelLength: settings.maxLabelLength,
                 mergeSequentialStatements: settings.mergeSequentialStatements,
                 maxStatementsPerBlock: settings.maxStatementsPerBlock,
+                labelMode: settings.labelMode,
+                lineWidth: settings.lineWidth,
+                maxLines: settings.maxLines,
+                exceptionEdges: settings.exceptionEdges,
+                expandCallbacks: settings.expandCallbacks,
+                maxCallbackDepth: settings.maxCallbackDepth,
                 preferClassMember: target.preferClassMember,
                 nameHint: target.nameHint
             });

@@ -128,7 +128,7 @@ export default function App() {
                         highlightNodeId={highlights[diagram.id]}
                         detailsOpen={!!details[diagram.id]}
                         startEditing={focus.edit && focus.id === diagram.id}
-                        maxLabelLength={settings.maxLabelLength}
+                        labels={settings.labels}
                         onToggleDetails={onToggleDetails}
                     />
                 ))}
@@ -144,6 +144,9 @@ export default function App() {
                     <span><i className="fc-swatch fc-sw-try" />try / catch</span>
                     <span><i className="fc-swatch fc-sw-async" />await</span>
                     <span><i className="fc-swatch fc-sw-unreachable" />Unreachable</span>
+                    <span><i className="fc-line fc-line-exception" />may throw → catch / finally</span>
+                    <span><i className="fc-line fc-line-abrupt" />return / rethrow through finally</span>
+                    <span><i className="fc-line fc-line-callback" />inline callback</span>
                 </footer>
             ) : null}
         </div>

@@ -2,7 +2,7 @@
 
 const vscode = require('vscode');
 const { COMMANDS, VIEW_TYPE, SUPPORTED_LANGUAGES, MESSAGES, EXTENSION_ID } = require('./constants');
-const { getSettings } = require('./config');
+const { getSettings, labelSettings } = require('./config');
 const { DiagramStore } = require('./diagramStore');
 const { FlowchartService } = require('./flowchartService');
 const { FlowchartPanel } = require('./flowchartPanel');
@@ -64,7 +64,7 @@ function activate(context) {
         const record = {
             id: crypto.randomUUID(),
             title,
-            mermaid: toMermaid(graph, { maxLabelLength: getSettings().maxLabelLength }),
+            mermaid: toMermaid(graph, labelSettings()),
             graph,
             origin,
             uri: '',

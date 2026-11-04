@@ -3,6 +3,28 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [2.2.0] - 2026-11-04
+
+### Added
+- **Inline callbacks as their own flows**: callbacks passed to calls (`forEach`, `map`, `then`, `setTimeout`, …), JSX event handlers, `new Promise(…)` executors and IIFEs are drawn as separate flows linked to their statement, with nested callbacks up to `flowchartGenerator.callbacks.maxDepth`. Statements show the callback body folded (`=> {…}`).
+- **Nested function declarations** stay in their parent's code (a definition node) and their body is drawn as a linked flow.
+- **Precise exceptional flow**: an `error` edge from every statement of a `try` block that may throw to its `catch` (or `finally`). `return` / `throw` go through `finally`, and an explicit "end finally" node continues with `then return` / `rethrow`. A `flowchartGenerator.exceptions: summary` setting restores the single edge.
+- **Long labels are no longer cut**: they wrap on several lines, very long code folds nested brackets innermost first, every node has a tooltip with its full code, and a **full labels** toggle shows everything in the nodes. New `labels.mode`, `labels.lineWidth` and `labels.maxLines` settings.
+- Legend entries for exception, `finally` and callback edges.
+- Mermaid import understands subgraphs (one flow per function / callback), dashed exception / `finally` / callback edges, and rebuilds folded bodies from their linked flows.
+
+### Fixed
+Found by running the generator on 11,345 real-world functions:
+- `{ … }` blocks that only scope `let` / `const` were flattened, which redeclared variables.
+- `case` bodies declaring variables are wrapped in a block.
+- `switch` cases were sometimes regenerated in a different order.
+- Infinite loops left only through `return`, and loops with both `break` and `return`, fell back to a state machine.
+- Merge points located after an enclosing `case` / loop boundary produced unstructured code.
+- The end of a `finally` block containing conditions could not be found.
+- Anonymous function expressions were regenerated with an invalid name.
+- Multi-line statements were indented 4 extra spaces.
+- In labels: comments swallowed the rest of an expression, and double quotes and HTML entities in strings did not survive a Mermaid round trip.
+
 ## [2.1.0] - 2026-11-04
 
 ### Added

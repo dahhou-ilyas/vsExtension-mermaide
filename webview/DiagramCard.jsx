@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { toMermaid } from '../src/core/graph';
+import { toMermaid, fullText } from '../src/core/graph';
 import { Inspector, CodePreview, useGraphHistory } from './FlowEditor';
 import MermaidDiagram, { clampZoom } from './MermaidDiagram';
 import { MetricStrip, Insights, UnitTable } from './DiagramDetails';
@@ -7,7 +7,7 @@ import { post } from './vscodeApi';
 import { toSvgMarkup, toPngDataUrl, editorBackground } from './exporter';
 import {
     ZoomInIcon, ZoomOutIcon, FitIcon, CopyIcon, MarkdownIcon, DownloadIcon, TrashIcon, RefreshIcon, CodeIcon, InfoIcon,
-    EditIcon, UndoIcon, RedoIcon
+    EditIcon, UndoIcon, RedoIcon, ExpandIcon
 } from './icons';
 
 function complexityLevel(value) {
@@ -68,13 +68,14 @@ function EditorBar({ diagram, history, onClose }) {
 }
 
 export default function DiagramCard({
-    diagram, theme, focused, focusTick, zoom, onZoomChange, highlightNodeId, detailsOpen, onToggleDetails, startEditing, maxLabelLength
+    diagram, theme, focused, focusTick, zoom, onZoomChange, highlightNodeId, detailsOpen, onToggleDetails, startEditing, labels
 }) {
     const svgRef = useRef(null);
     const cardRef = useRef(null);
     const [exportOpen, setExportOpen] = useState(false);
     const [editing, setEditing] = useState(!!startEditing && !!diagram.graph);
     const [selectedId, setSelectedId] = useState(undefined);
+    const [fullLabels, setFullLabels] = useState(false);
     const history = useGraphHistory(diagram.graph);
     const complexity = complexityLevel(diagram.complexity);
     const attached = !!diagram.uri;
@@ -103,10 +104,28 @@ export default function DiagramCard({
         return () => window.removeEventListener('keydown', onKey);
     });
 
-    const editMermaid = useMemo(
-        () => (editing && history.graph ? toMermaid(history.graph, { maxLabelLength: maxLabelLength || 60, selectedId }) : null),
-        [editing, history.graph, selectedId, maxLabelLength]
+    const labelOptions = useMemo(
+        () => ({ ...(labels || {}), ...(fullLabels ? { labelMode: 'wrap', maxLines: 60 } : {}) }),
+        [labels, fullLabels]
     );
+    const editMermaid = useMemo(
+        () => (editing && history.graph ? toMermaid(history.graph, { ...labelOptions, selectedId }) : null),
+        [editing, history.graph, selectedId, labelOptions]
+    );
+    // Rendered from the graph so label settings apply immediately; older records only have Mermaid text.
+    const viewMermaid = useMemo(
+        () => (diagram.graph ? toMermaid(diagram.graph, labelOptions) : diagram.mermaid),
+        [diagram.graph, diagram.mermaid, labelOptions]
+    );
+    const shownGraph = editing ? history.graph : diagram.graph;
+    const nodeTexts = useMemo(() => {
+        const texts = {};
+        for (const node of (shownGraph && shownGraph.nodes) || []) {
+            const text = fullText(node);
+            if (text && node.kind !== 'end') texts[node.id] = text.length > 1500 ? `${text.slice(0, 1500)}…` : text;
+        }
+        return texts;
+    }, [shownGraph]);
 
     const closeEditor = () => {
         history.reset(diagram.graph);
@@ -186,6 +205,10 @@ export default function DiagramCard({
                     </button>
                     <ToolButton label="Zoom in" onClick={() => setZoom(clampZoom(currentZoom * 1.25))}><ZoomInIcon /></ToolButton>
                     <ToolButton label="Fit to width" onClick={() => setZoom('fit')}><FitIcon /></ToolButton>
+                    {diagram.graph ? (
+                        <ToolButton label={fullLabels ? 'Compact labels' : 'Show the full code in every node'} active={fullLabels}
+                            onClick={() => setFullLabels((v) => !v)}><ExpandIcon /></ToolButton>
+                    ) : null}
                     <span className="fc-separator" />
                     {diagram.graph ? (
                         <ToolButton label={editing ? 'Close the editor' : 'Edit the chart and generate code'} active={editing}
@@ -218,12 +241,13 @@ export default function DiagramCard({
             {editing ? <EditorBar diagram={diagram} history={history} onClose={closeEditor} /> : null}
             <div className={editing ? 'fc-edit-layout' : undefined}>
                 <MermaidDiagram
-                    code={editing ? editMermaid : diagram.mermaid}
+                    code={editing ? editMermaid : viewMermaid}
                     theme={theme}
                     zoom={zoom === undefined ? 'fit' : zoom}
                     onZoom={setZoom}
                     svgRef={svgRef}
                     nodeLines={editing ? {} : nodeLines}
+                    nodeTexts={nodeTexts}
                     highlightNodeId={editing ? undefined : highlightNodeId}
                     tooltip={editing ? 'Click to select and edit' : undefined}
                     onNodeClick={(nodeId) => {

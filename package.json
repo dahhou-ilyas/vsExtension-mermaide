@@ -2,7 +2,7 @@
   "name": "flowchartgenerator",
   "displayName": "Flowchart Generator",
   "description": "Turn JavaScript and TypeScript into interactive flowcharts, and flowcharts back into code. Edit the chart, see the code update live, apply it to your source.",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "publisher": "GeneratedFlowChart",
   "author": {
     "name": "Ilyas Dahhou"
@@ -175,7 +175,59 @@
           "default": 60,
           "minimum": 10,
           "maximum": 300,
-          "description": "Maximum number of characters shown in a node before it is truncated."
+          "description": "Maximum characters per label when `flowchartGenerator.labels.mode` is `truncate`."
+        },
+        "flowchartGenerator.labels.mode": {
+          "type": "string",
+          "enum": [
+            "wrap",
+            "truncate"
+          ],
+          "enumDescriptions": [
+            "Wrap long code on several lines and fold nested brackets ({…}) when it is very long",
+            "Cut labels after `flowchartGenerator.maxLabelLength` characters"
+          ],
+          "default": "wrap",
+          "description": "How long code is displayed in nodes. The full code is always available in the node tooltip."
+        },
+        "flowchartGenerator.labels.lineWidth": {
+          "type": "number",
+          "default": 40,
+          "minimum": 15,
+          "maximum": 120,
+          "description": "Characters per line in node labels (wrap mode)."
+        },
+        "flowchartGenerator.labels.maxLines": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Maximum lines per statement in node labels (wrap mode)."
+        },
+        "flowchartGenerator.exceptions": {
+          "type": "string",
+          "enum": [
+            "detailed",
+            "summary"
+          ],
+          "enumDescriptions": [
+            "An edge from every statement of a try block that may throw (calls, new, await, throw) to its catch or finally",
+            "A single edge from try to catch"
+          ],
+          "default": "detailed",
+          "description": "How exceptional control flow is drawn."
+        },
+        "flowchartGenerator.callbacks.expand": {
+          "type": "boolean",
+          "default": true,
+          "description": "Draw inline callbacks (forEach, map, then, event handlers, IIFEs…) as their own flows, linked to the statement that contains them."
+        },
+        "flowchartGenerator.callbacks.maxDepth": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many levels of nested callbacks are expanded."
         },
         "flowchartGenerator.mergeSequentialStatements": {
           "type": "boolean",

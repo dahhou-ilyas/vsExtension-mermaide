@@ -291,3 +291,13 @@ kbd {
     line-height: 1.45; tab-size: 4;
 }
 .fc-small { font-size: 0.85em; margin: 6px 0 0; }
+
+.fc-line { display: inline-block; width: 22px; height: 0; border-top: 2px dashed; }
+.fc-line-exception { border-color: #e53935; }
+.fc-line-abrupt { border-color: #8e24aa; }
+.fc-line-callback { border-color: #00897b; border-top-style: dotted; }
+.fc-readonly {
+    margin: 8px 0 0; padding: 8px; border-radius: 4px; overflow: auto; max-height: 200px;
+    background: var(--vscode-textCodeBlock-background, rgba(128, 128, 128, 0.12));
+    font-family: var(--vscode-editor-font-family, monospace);
+}

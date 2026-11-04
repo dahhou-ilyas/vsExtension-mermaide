@@ -15,7 +15,7 @@
  *     this is always possible and preserves the behaviour exactly.
  */
 
-const { indexGraph } = require('./graph');
+const { indexGraph, isNormalEdge, isEmbeddedUnit } = require('./graph');
 
 class UnstructuredError extends Error {}
 
@@ -82,7 +82,17 @@ function buildFlow(graph, unitIndex) {
             succ.set(node.id, []);
             continue;
         }
-        succ.set(node.id, (out.get(node.id) || []).filter((e) => nodes.has(e.to)).map((e) => e.to));
+        // Only the normal control flow: exception, abrupt and callback edges are implied by the code.
+        const targets = (out.get(node.id) || [])
+            .filter((e) => isNormalEdge(e) && nodes.has(e.to) && nodes.get(e.to).unit === unitIndex)
+            .map((e) => e.to);
+        // A try block may jump to its catch at any point: keep that branch for the analysis.
+        if (node.kind === 'try') {
+            const catchId = (node.meta && node.meta.catchId)
+                || ((out.get(node.id) || []).find((e) => e.label === 'error') || {}).to;
+            if (catchId && nodes.has(catchId) && !targets.includes(catchId)) targets.push(catchId);
+        }
+        succ.set(node.id, targets);
     }
 
     // Reachable nodes from the start.
@@ -216,7 +226,8 @@ class StructuredEmitter {
     }
 
     outEdges(id) {
-        return (this.flow.out.get(id) || []).filter((e) => this.flow.nodes.has(e.to));
+        const unit = this.node(id) && this.node(id).unit;
+        return (this.flow.out.get(id) || []).filter((e) => isNormalEdge(e) && this.flow.nodes.has(e.to) && this.flow.nodes.get(e.to).unit === unit);
     }
 
     edgeTo(id, labels) {
@@ -238,9 +249,10 @@ class StructuredEmitter {
      */
     mergePoint(id, ctx) {
         const loop = [...ctx.jumps].reverse().find((j) => j.type === 'loop');
-        const inScope = (m) => !loop || loop.body.has(m) || m === loop.continueTarget;
+        // Inside a loop, a merge point must be in the loop body, or a path that only returns / throws.
+        const inScope = (m) => !loop || loop.body.has(m) || m === loop.continueTarget || this.endsInTerminal(m);
         const merge = this.flow.ipd(id);
-        if (merge && inScope(merge)) return merge;
+        if (merge && inScope(merge) && this.reachableWithin(id, merge, ctx)) return merge;
 
         const blockers = new Set([...ctx.stops, id]);
         for (const j of ctx.jumps) {
@@ -254,8 +266,10 @@ class StructuredEmitter {
             const stack = [branch];
             while (stack.length) {
                 const n = stack.pop();
-                if (seen.has(n) || blockers.has(n) || !this.flow.succ.has(n)) continue;
+                if (seen.has(n) || n === id || !this.flow.succ.has(n)) continue;
                 seen.add(n);
+                // An enclosing stop can be where branches meet, but the walk does not go past it.
+                if (blockers.has(n)) continue;
                 (this.flow.succ.get(n) || []).forEach((s) => stack.push(s));
             }
             seen.forEach((n) => counts.set(n, (counts.get(n) || 0) + 1));
@@ -263,19 +277,86 @@ class StructuredEmitter {
         const candidates = [...counts].filter(([n, c]) => c >= 2 && inScope(n)).map(([n]) => n);
         if (!candidates.length) return null;
         candidates.sort((a, b) => (this.flow.rpo.get(a) ?? 0) - (this.flow.rpo.get(b) ?? 0));
-        return candidates[0];
+        // The first meeting point is the candidate from which every other one is reached.
+        const reaches = (from) => {
+            const seen = new Set();
+            const stack = [from];
+            while (stack.length) {
+                const n = stack.pop();
+                if (seen.has(n)) continue;
+                seen.add(n);
+                if (n !== from && blockers.has(n)) continue;
+                (this.flow.succ.get(n) || []).forEach((s) => stack.push(s));
+            }
+            return seen;
+        };
+        const first = candidates.find((c) => {
+            const seen = reaches(c);
+            return candidates.every((other) => seen.has(other));
+        });
+        return first || candidates[0];
     }
 
-    /** Single node outside the loop body that the body jumps to, if any. */
-    loopExitFromBody(body, header) {
+    /**
+     * Whether no branch of `id` crosses an enclosing stop (the next case of a
+     * switch, the header of a loop, ...) before reaching `merge`. Otherwise the
+     * post-dominator lies outside the current block and cannot be the merge point.
+     */
+    reachableWithin(id, merge, ctx) {
+        const stops = new Set(ctx.stops);
+        stops.delete(merge);
+        for (const branch of new Set(this.flow.succ.get(id) || [])) {
+            const seen = new Set();
+            const stack = [branch];
+            while (stack.length) {
+                const n = stack.pop();
+                if (n === merge || seen.has(n) || n === id) continue;
+                seen.add(n);
+                if (stops.has(n)) return false;
+                (this.flow.succ.get(n) || []).forEach((s) => stack.push(s));
+            }
+        }
+        return true;
+    }
+
+    /** Whether every path from `id` ends with return / throw (it never rejoins the rest of the code). */
+    endsInTerminal(id) {
+        const seen = new Set();
+        const stack = [id];
+        while (stack.length) {
+            const n = stack.pop();
+            if (seen.has(n)) continue;
+            seen.add(n);
+            const node = this.node(n);
+            if (!node || node.kind === 'end') return false;
+            if (node.kind === 'return' || node.kind === 'throw') continue;
+            const succs = this.flow.succ.get(n) || [];
+            if (succs.length === 0 || seen.size > 500) return false;
+            succs.forEach((s) => stack.push(s));
+        }
+        return true;
+    }
+
+    /**
+     * The node a loop body leaves to with `break`. When several nodes are
+     * reached from the body (e.g. `break` and `return`), the exit recorded by
+     * the builder (`meta.exitId`) decides; otherwise a single non-terminal target.
+     */
+    loopExitFromBody(body, header, hintNode) {
         const exits = new Set();
         for (const n of body) {
             for (const s of this.flow.succ.get(n) || []) {
                 if (s !== header && !body.has(s)) exits.add(s);
             }
         }
-        if (exits.size > 1) throw new UnstructuredError('Loop with several exits.');
-        return exits.size ? [...exits][0] : null;
+        if (exits.size <= 1) return exits.size ? [...exits][0] : null;
+        const hint = hintNode && hintNode.meta && hintNode.meta.exitId;
+        if (hint && exits.has(hint)) return hint;
+        const nonTerminal = [...exits].filter((e) => !this.endsInTerminal(e));
+        if (nonTerminal.length === 1) return nonTerminal[0];
+        // Only returns / throws leave the loop: there is no break target, they stay in the body.
+        if (nonTerminal.length === 0) return null;
+        throw new UnstructuredError('Loop with several exits.');
     }
 
     /**
@@ -285,6 +366,13 @@ class StructuredEmitter {
     region(entry, stops, ctx) {
         ctx = { ...ctx, stops };
         const body = [];
+        // Statements remember the block scope of the node they come from (see applyScopes).
+        const rawPush = body.push.bind(body);
+        let currentScope = [];
+        body.push = (...items) => {
+            items.forEach((item) => { if (!item.scope) item.scope = currentScope; });
+            return rawPush(...items);
+        };
         let cur = entry;
         const seen = new Set();
 
@@ -302,6 +390,7 @@ class StructuredEmitter {
 
             const node = this.node(cur);
             if (!node) throw new UnstructuredError(`Unknown node ${cur}.`);
+            currentScope = node.scope || [];
 
             switch (node.kind) {
                 case 'start':
@@ -355,19 +444,19 @@ class StructuredEmitter {
     }
 
     /** break / continue when `id` is the target of an enclosing construct. */
-    jumpTo(id, ctx) {
+    jumpTo(id, ctx, dryRun = false) {
         for (let i = ctx.jumps.length - 1; i >= 0; i--) {
             const j = ctx.jumps[i];
             const innermostBreakable = ctx.jumps.slice(i + 1).every((x) => x.type === 'if');
             const innermostLoop = !ctx.jumps.slice(i + 1).some((x) => x.type === 'loop');
             if (j.type === 'loop' && id === j.continueTarget) {
                 const needsLabel = !innermostLoop;
-                if (needsLabel) j.usedLabel = true;
+                if (needsLabel && !dryRun) j.usedLabel = true;
                 return { t: 'continue', label: needsLabel ? j.label : undefined };
             }
             if ((j.type === 'loop' || j.type === 'switch') && id === j.exit) {
                 const needsLabel = !innermostBreakable;
-                if (needsLabel) j.usedLabel = true;
+                if (needsLabel && !dryRun) j.usedLabel = true;
                 return { t: 'break', label: needsLabel ? j.label : undefined };
             }
         }
@@ -415,17 +504,19 @@ class StructuredEmitter {
         }
         const ends = [...new Set(regions.map((r) => r.stoppedAt).filter((x) => x !== null))];
         if (ends.length === 0) return undefined;
-        if (ends.length === 1 && ctx.stops.has(ends[0])) return ends[0];
-        // Several different exits: keep the first one as fall-through, jump to the others.
-        const [first, ...others] = ends;
-        for (const region of regions) {
-            if (region.stoppedAt === null || region.stoppedAt === first) continue;
-            const jump = this.jumpTo(region.stoppedAt, { ...ctx, stops: new Set() });
-            if (!jump) throw new UnstructuredError('A branch leaves its block.');
-            region.body.push(jump);
+        const noStops = { ...ctx, stops: new Set() };
+        // Ends that are loop headers / exits can be written as continue / break; at most
+        // one other end may remain, and the construct falls through to it.
+        const plain = ends.filter((e) => !this.jumpTo(e, noStops, true));
+        if (plain.length > 1 || (plain.length === 1 && !ctx.stops.has(plain[0]))) {
+            throw new UnstructuredError('A branch leaves its block.');
         }
-        if (!ctx.stops.has(first) && others.length) throw new UnstructuredError('A branch leaves its block.');
-        return first;
+        const fallThrough = plain.length === 1 ? plain[0] : (ends.length === 1 && ctx.stops.has(ends[0]) ? ends[0] : null);
+        for (const region of regions) {
+            if (region.stoppedAt === null || region.stoppedAt === fallThrough) continue;
+            region.body.push(this.jumpTo(region.stoppedAt, noStops));
+        }
+        return fallThrough || undefined;
     }
 
     loopEntryExit(id) {
@@ -435,7 +526,7 @@ class StructuredEmitter {
         let exit = this.edgeTo(id, iteration ? ['done', 'no'] : ['no', 'done', 'false']);
         if (!entry) throw new UnstructuredError(`Loop ${id} has no body edge.`);
         const body = loopBody(this.flow, entry, id);
-        if (!exit) exit = this.loopExitFromBody(body, id);
+        if (!exit) exit = this.loopExitFromBody(body, id, node);
         return { entry, exit, body };
     }
 
@@ -475,7 +566,7 @@ class StructuredEmitter {
         if (!test) throw new UnstructuredError('do…while without its test.');
         const entry = this.singleSuccessor(id);
         const doBody = new Set([...loopBody(this.flow, entry, test), test]);
-        const exit = this.edgeTo(test, ['no', 'false']) || this.loopExitFromBody(doBody, id);
+        const exit = this.edgeTo(test, ['no', 'false']) || this.loopExitFromBody(doBody, id, this.node(id));
         const jump = {
             type: 'loop',
             continueTarget: test,
@@ -493,7 +584,8 @@ class StructuredEmitter {
 
     emitSwitch(id, body, ctx) {
         const node = this.node(id);
-        const merge = this.mergePoint(id, ctx);
+        const hint = node.meta && node.meta.exitId && this.flow.reachable.has(node.meta.exitId) ? node.meta.exitId : null;
+        let merge = this.mergePoint(id, ctx) || hint;
         const edges = this.outEdges(id);
 
         // Group case labels by target, keeping the source order.
@@ -511,6 +603,17 @@ class StructuredEmitter {
                 groups.push(group);
             }
             group.tests.push(test);
+        }
+
+        // Cases are emitted in source order when the builder recorded it.
+        const order = node.meta && Array.isArray(node.meta.caseOrder) ? node.meta.caseOrder : null;
+        if (order) {
+            const rank = (test) => {
+                const i = order.indexOf(test);
+                return i < 0 ? order.length : i;
+            };
+            groups.forEach((g) => g.tests.sort((a, b) => rank(a) - rank(b)));
+            groups.sort((a, b) => rank(a.tests[0]) - rank(b.tests[0]));
         }
 
         const jump = { type: 'switch', exit: merge, label: `switch${++this.labelCounter}`, usedLabel: false };
@@ -533,12 +636,15 @@ class StructuredEmitter {
                 region.body.push({ t: 'break' });
             } else if (next && region.stoppedAt === next.target) {
                 // fall-through into the next case
-            } else if (ctx.stops.has(region.stoppedAt)) {
-                const out = this.jumpTo(region.stoppedAt, { ...ctx, stops: new Set() });
-                if (!out) throw new UnstructuredError('switch case leaves the switch.');
-                region.body.push(out);
+            } else if (ctx.stops.has(region.stoppedAt) && this.jumpTo(region.stoppedAt, { ...ctx, stops: new Set() }, true)) {
+                region.body.push(this.jumpTo(region.stoppedAt, { ...ctx, stops: new Set() }));
+            } else if (!merge && ctx.stops.has(region.stoppedAt)) {
+                // The cases meet again only after an enclosing construct: that is where the switch ends.
+                merge = region.stoppedAt;
+                jump.exit = merge;
+                region.body.push({ t: 'break' });
             } else {
-                throw new UnstructuredError('switch case falls through to a non-adjacent case.');
+                throw new UnstructuredError(`switch case ends at ${region.stoppedAt}, outside the switch.`);
             }
             cases.push({ tests: group.tests, body: region.body });
         });
@@ -551,9 +657,10 @@ class StructuredEmitter {
         const node = this.node(id);
         const meta = node.meta || {};
         const edges = this.outEdges(id);
-        const catchEdge = edges.find((e) => e.label === 'error');
-        const blockEdge = edges.find((e) => e !== catchEdge);
-        const catchNode = catchEdge ? this.node(catchEdge.to) : null;
+        const catchId = meta.catchId
+            || ((this.flow.out.get(id) || []).find((e) => e.label === 'error') || {}).to;
+        const blockEdge = edges.find((e) => e.to !== catchId);
+        const catchNode = catchId ? this.node(catchId) : null;
         const finallyId = meta.finallyId && this.flow.nodes.has(meta.finallyId) ? meta.finallyId : null;
         const merge = finallyId || this.mergePoint(id, ctx);
 
@@ -577,9 +684,26 @@ class StructuredEmitter {
             return next;
         }
 
-        // finally: from its first statement to the recorded exits of the block.
+        // finally: from its first statement to its explicit end node.
         const finallyNode = this.node(finallyId);
-        const exits = (finallyNode.meta && finallyNode.meta.exits) || [];
+        const endId = finallyNode.meta && finallyNode.meta.endId;
+        if (endId && this.flow.nodes.has(endId)) {
+            const first = this.singleSuccessor(finallyId);
+            const region = first === endId || !first
+                ? { body: [], stoppedAt: endId }
+                : this.region(first, new Set([...ctx.stops, endId]), this.withVisiting(inner, finallyId));
+            const after = region.stoppedAt === endId ? this.singleSuccessor(endId) : undefined;
+            if (region.stoppedAt !== null && region.stoppedAt !== endId) region.body.push(this.jumpTo(region.stoppedAt, { ...ctx, stops: new Set() }) || (() => { throw new UnstructuredError('finally leaves its block.'); })());
+            body.push({ t: 'try', block: block.body, handler, finalizer: region.body });
+            return after;
+        }
+        if (!finallyNode.meta || finallyNode.meta.exits === undefined) {
+            // A finally with no recorded end never completes normally (it returns / throws).
+            const region = this.region(this.singleSuccessor(finallyId), new Set(ctx.stops), this.withVisiting(inner, finallyId));
+            body.push({ t: 'try', block: block.body, handler, finalizer: region.body });
+            return undefined;
+        }
+        const exits = finallyNode.meta.exits;
         let finalizer = [];
         let after;
         if (exits.length === 1 && exits[0].id === finallyId) {
@@ -606,12 +730,60 @@ class StructuredEmitter {
         const { unit } = this.flow;
         const ctx = { jumps: [], stops: new Set(), visiting: new Set() };
         const region = this.region(unit.startId, new Set(), ctx);
-        const unreachable = this.graph.nodes.filter((n) => n.unit === this.graph.units.indexOf(unit)
-            && !this.flow.reachable.has(n.id) && n.kind !== 'end');
+        const index = this.graph.units.indexOf(unit);
+        const notReached = this.graph.nodes.filter((n) => n.unit === index && !this.flow.reachable.has(n.id) && n.kind !== 'end');
+        // Function declarations placed after a return are hoisted: they still belong to the code.
+        const hoisted = notReached.filter((n) => n.meta && n.meta.declaration);
+        const unreachable = notReached.filter((n) => !(n.meta && n.meta.declaration));
         if (unreachable.length) {
             this.warnings.push(`${unreachable.length} unreachable node(s) in "${unit.name}" were not converted.`);
         }
-        return cleanup(region.body);
+        const body = applyScopes(cleanup(region.body), 0);
+        hoisted.forEach((n) => (n.code || []).forEach((c) => body.push({ t: 'code', text: withSemicolon(c), scope: [] })));
+        return body;
+    }
+}
+
+/**
+ * Re-creates the `{ … }` blocks that only limited the scope of declarations:
+ * consecutive statements sharing a deeper scope are wrapped in a block.
+ */
+function applyScopes(body, level) {
+    const result = [];
+    let i = 0;
+    while (i < body.length) {
+        const stmt = body[i];
+        recurseScopes(stmt);
+        const scope = stmt.scope || [];
+        if (scope.length > level) {
+            const id = scope[level];
+            const group = [];
+            while (i < body.length && (body[i].scope || []).length > level && body[i].scope[level] === id) {
+                group.push(body[i]);
+                i++;
+            }
+            result.push({ t: 'block', body: applyScopes(group, level + 1), scope: scope.slice(0, level) });
+        } else {
+            result.push(stmt);
+            i++;
+        }
+    }
+    return result;
+}
+
+function recurseScopes(stmt) {
+    const base = (stmt.scope || []).length;
+    if (stmt.t === 'if') {
+        stmt.then = applyScopes(stmt.then, base);
+        stmt.else = applyScopes(stmt.else, base);
+    } else if (stmt.t === 'loop' || stmt.t === 'do') {
+        stmt.body = applyScopes(stmt.body, base);
+    } else if (stmt.t === 'switch') {
+        stmt.cases.forEach((c) => { c.body = applyScopes(c.body, base); });
+    } else if (stmt.t === 'try') {
+        stmt.block = applyScopes(stmt.block, base);
+        if (stmt.handler) stmt.handler.body = applyScopes(stmt.handler.body, base);
+        if (stmt.finalizer) stmt.finalizer = applyScopes(stmt.finalizer, base);
     }
 }
 
@@ -662,13 +834,25 @@ function cleanup(body, inLoopTail = false) {
 /* Printing                                                                    */
 /* ------------------------------------------------------------------------- */
 
+/** `let`, `const`, `class` or `function` declared directly in a list of statements. */
+function declaresLexically(stmt) {
+    return (stmt.t === 'code' || stmt.t === 'raw') && /^\s*(?:export\s+)?(?:const|let|class|function|async\s+function|using)\b/.test(stmt.text)
+        && !/^\s*(?:const|let)\s*=/.test(stmt.text);
+}
+
 function reindent(text, pad) {
     const lines = String(text).replace(/\r\n/g, '\n').split('\n');
     if (lines.length === 1) return [pad + lines[0].trim()];
-    // Keep the relative indentation of multi-line statements.
+    // Keep the relative indentation of multi-line statements. The first line lost its
+    // indentation when it was extracted; when the statement ends with a closing line
+    // (`});`, `]`, `}`), that line has the original indentation of the statement.
     const rest = lines.slice(1).filter((l) => l.trim());
-    const common = rest.length ? Math.min(...rest.map((l) => l.match(/^\s*/)[0].length)) : 0;
-    return [pad + lines[0].trim(), ...lines.slice(1).map((l) => (l.trim() ? pad + '    ' + l.slice(common) : ''))]
+    const indentOf = (l) => l.match(/^\s*/)[0].length;
+    const common = rest.length ? Math.min(...rest.map(indentOf)) : 0;
+    const last = rest[rest.length - 1] || '';
+    const closes = /^\s*[}\])]/.test(last) && indentOf(last) === common;
+    const extra = closes ? '' : '    ';
+    return [pad + lines[0].trim(), ...lines.slice(1).map((l) => (l.trim() ? pad + extra + l.slice(common) : ''))]
         .map((l) => l.replace(/\s+$/, ''));
 }
 
@@ -711,6 +895,11 @@ function print(body, indent, unit) {
                 lines.push(`${pad}}`);
                 break;
             }
+            case 'block':
+                lines.push(`${pad}{`);
+                lines.push(...print(stmt.body, indent + 1, unit));
+                lines.push(`${pad}}`);
+                break;
             case 'loop':
                 lines.push(`${pad}${stmt.label ? `${stmt.label}: ` : ''}${stmt.head.trim()} {`);
                 lines.push(...print(stmt.body, indent + 1, unit));
@@ -725,7 +914,14 @@ function print(body, indent, unit) {
                 lines.push(`${pad}${stmt.label ? `${stmt.label}: ` : ''}switch (${stmt.disc.trim()}) {`);
                 for (const c of stmt.cases) {
                     for (const test of c.tests) lines.push(test === null ? `${pad}${unit}default:` : `${pad}${unit}case ${test.trim()}:`);
-                    lines.push(...print(c.body, indent + 2, unit));
+                    // All cases share one scope: declarations get their own block, as in the original code.
+                    if (c.body.some(declaresLexically)) {
+                        lines[lines.length - 1] += ' {';
+                        lines.push(...print(c.body, indent + 2, unit));
+                        lines.push(`${pad}${unit}}`);
+                    } else {
+                        lines.push(...print(c.body, indent + 2, unit));
+                    }
                 }
                 lines.push(`${pad}}`);
                 break;
@@ -776,6 +972,9 @@ function stateMachine(graph, unitIndex, indentUnit) {
         return assignments.length ? `${assignments.join(', ')};` : '';
     };
 
+    // Function declarations are hoisted: emit them once, before the state machine.
+    const declarations = graph.nodes.filter((n) => n.unit === unitIndex && n.meta && n.meta.declaration);
+    declarations.forEach((n) => (n.code || []).forEach((c) => lines.push(...reindent(String(c), ''))));
     lines.push(`let state = ${entry ? `'${entry}'` : 'null'};`);
     lines.push('flow: while (state !== null) {');
     lines.push(`${pad(1)}switch (state) {`);
@@ -791,6 +990,10 @@ function stateMachine(graph, unitIndex, indentUnit) {
         const body = pad(3);
         switch (node.kind) {
             case 'process':
+                if (node.meta && node.meta.declaration) {
+                    lines.push(body + go(flow.succ.get(id)[0]));
+                    break;
+                }
                 (node.code || []).flatMap((c) => (node.meta && node.meta.multiline ? splitTopLevel(String(c), '\n') : [c])).forEach((c) => {
                     if (/^\s*\/\//.test(c)) {
                         lines.push(body + String(c).trim());
@@ -907,10 +1110,12 @@ function header(meta) {
         case 'expression':
         default:
             if (meta.exportDefault) return { open: `export default ${fnExpr}`, close: arrow ? '};' : '}' };
-            if (meta.name && meta.name !== 'anonymous' && meta.name !== 'default' && !arrow) {
+            // A function expression is regenerated as the expression itself, so it can replace the original in place.
+            if (!arrow && meta.ownName !== false && meta.name && /^[A-Za-z_$][\w$]*$/.test(meta.name)
+                && meta.name !== 'anonymous' && meta.name !== 'default' && meta.ownName) {
                 return { open: `${asyncKw}function${star} ${meta.name}${typeParams}(${params})${returnType} {`, close: '}' };
             }
-            return { open: arrow ? `(${fnExpr}` : `(${fnExpr}`, close: arrow ? '});' : '});' };
+            return { open: fnExpr, close: '}' };
     }
 }
 
@@ -929,12 +1134,16 @@ function header(meta) {
  * Generates source code from a flowchart graph.
  *
  * @param {import('./graph').Graph} graph
- * @param {{ indent?: string, unit?: number, forceStateMachine?: boolean }} [options]
+ * @param {{ indent?: string, unit?: number, forceStateMachine?: boolean, strict?: boolean }} [options]
+ *   strict: throw instead of falling back to a state machine (used by tests)
  * @returns {CodegenResult}
  */
 function generateCode(graph, options = {}) {
     const indentUnit = options.indent || '    ';
-    const indices = typeof options.unit === 'number' ? [options.unit] : graph.units.map((_, i) => i);
+    // Inline callbacks are part of the code of the statement that contains them.
+    const indices = typeof options.unit === 'number'
+        ? [options.unit]
+        : graph.units.map((u, i) => (isEmbeddedUnit(u) ? -1 : i)).filter((i) => i >= 0);
     const chunks = [];
     const units = [];
     const warnings = [];
@@ -953,6 +1162,7 @@ function generateCode(graph, options = {}) {
             bodyLines = print(body, 0, indentUnit);
         } catch (error) {
             if (!(error instanceof UnstructuredError)) throw error;
+            if (options.strict) throw error;
             mode = 'state-machine';
             bodyLines = stateMachine(graph, index, indentUnit);
             if (!options.forceStateMachine) {
@@ -973,4 +1183,21 @@ function generateCode(graph, options = {}) {
     return { code: `${chunks.join('\n\n')}\n`, units, warnings };
 }
 
-module.exports = { generateCode, UnstructuredError };
+/**
+ * Body of one unit (without its header), e.g. to put the code of a callback
+ * flow back into the statement that contains it.
+ * @returns {string}
+ */
+function generateBody(graph, unitIndex, indent = '    ') {
+    let lines;
+    try {
+        const emitter = new StructuredEmitter(graph, unitIndex);
+        lines = print(emitter.emitUnit(), 0, indent);
+    } catch (error) {
+        if (!(error instanceof UnstructuredError)) throw error;
+        lines = stateMachine(graph, unitIndex, indent);
+    }
+    return lines.join('\n');
+}
+
+module.exports = { generateCode, generateBody, UnstructuredError };

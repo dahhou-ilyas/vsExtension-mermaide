@@ -25,3 +25,4 @@ export const InfoIcon = () => <Icon><circle cx="8" cy="8" r="6.5" /><path d="M8 
 export const EditIcon = () => <Icon><path d="M11 2.5l2.5 2.5L6 12.5H3.5V10z" /><path d="M9.5 4l2.5 2.5" /></Icon>;
 export const UndoIcon = () => <Icon><path d="M5.5 3 2.5 6l3 3" /><path d="M2.5 6H10a3.5 3.5 0 0 1 0 7H7" /></Icon>;
 export const RedoIcon = () => <Icon><path d="M10.5 3l3 3-3 3" /><path d="M13.5 6H6a3.5 3.5 0 0 0 0 7h3" /></Icon>;
+export const ExpandIcon = () => <Icon><path d="M2.5 4h11M2.5 8h11M2.5 12h7" /><path d="M12 10.5l1.5 1.5L12 13.5" /></Icon>;
