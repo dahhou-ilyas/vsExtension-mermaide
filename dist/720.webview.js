@@ -1,1 +1,0 @@
-"use strict";(self.webpackChunkflowchartgenerator=self.webpackChunkflowchartgenerator||[]).push([[720],{9720:(e,r,c)=>{c.d(r,{createArchitectureServices:()=>t.S});var t=c(9936);c(9369)}}]);

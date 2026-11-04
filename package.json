@@ -1,78 +1,253 @@
 {
   "name": "flowchartgenerator",
   "displayName": "Flowchart Generator",
-  "description": "A VS Code extension that helps developers visualize code through flow diagrams",
-  "version": "1.0.2",
-  "type": "commonjs",
+  "description": "Turn JavaScript and TypeScript into interactive flowcharts, and flowcharts back into code. Edit the chart, see the code update live, apply it to your source.",
+  "version": "2.1.0",
   "publisher": "GeneratedFlowChart",
+  "author": {
+    "name": "Ilyas Dahhou"
+  },
+  "license": "MIT",
+  "icon": "icon.png",
+  "homepage": "https://github.com/dahhou-ilyas/vsExtension-mermaide#readme",
+  "bugs": {
+    "url": "https://github.com/dahhou-ilyas/vsExtension-mermaide/issues"
+  },
   "repository": {
     "type": "git",
     "url": "https://github.com/dahhou-ilyas/vsExtension-mermaide"
+  },
+  "galleryBanner": {
+    "color": "#21214c",
+    "theme": "dark"
   },
   "engines": {
     "vscode": "^1.96.0"
   },
   "categories": [
+    "Visualization",
+    "Programming Languages",
     "Other"
   ],
-  "activationEvents": [
-    "onStartupFinished"
+  "keywords": [
+    "flowchart",
+    "control flow",
+    "diagram",
+    "mermaid",
+    "visualization",
+    "javascript",
+    "typescript",
+    "react",
+    "complexity",
+    "code generation",
+    "flowchart to code",
+    "visual programming"
   ],
-  "main": "./extension.js",
-  "icon": "icon.png",
-  "galleryBanner": {
-    "color": "#21214c",
-    "theme": "dark"
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onLanguage:javascript",
+    "onLanguage:javascriptreact",
+    "onLanguage:typescript",
+    "onLanguage:typescriptreact",
+    "onWebviewPanel:flowchartGenerator.panel"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
   },
   "contributes": {
     "commands": [
       {
-        "command": "real-time-performance-profiler.generateFlowChart",
-        "title": "generateFlowChart"
+        "command": "flowchartGenerator.generate",
+        "title": "Generate Flowchart",
+        "category": "Flowchart",
+        "icon": "$(type-hierarchy)"
+      },
+      {
+        "command": "flowchartGenerator.generateFile",
+        "title": "Generate Flowchart for Entire File",
+        "category": "Flowchart"
+      },
+      {
+        "command": "flowchartGenerator.showPanel",
+        "title": "Show Flowchart Panel",
+        "category": "Flowchart"
+      },
+      {
+        "command": "flowchartGenerator.clearHistory",
+        "title": "Clear Flowchart History",
+        "category": "Flowchart"
+      },
+      {
+        "command": "flowchartGenerator.newFlowchart",
+        "title": "New Flowchart (Design → Code)",
+        "category": "Flowchart",
+        "icon": "$(add)"
+      },
+      {
+        "command": "flowchartGenerator.codeFromMermaid",
+        "title": "Generate Code from Mermaid Flowchart",
+        "category": "Flowchart"
       }
     ],
     "menus": {
       "editor/context": [
         {
-          "command": "real-time-performance-profiler.generateFlowChart",
-          "when": "editorTextFocus",
+          "command": "flowchartGenerator.generate",
+          "when": "editorLangId =~ /^(javascript|javascriptreact|typescript|typescriptreact)$/",
+          "group": "navigation@90"
+        },
+        {
+          "command": "flowchartGenerator.codeFromMermaid",
+          "when": "editorLangId =~ /^(markdown|mermaid)$/ || resourceExtname =~ /^\\.(mmd|mermaid)$/",
+          "group": "navigation@91"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "flowchartGenerator.generate",
+          "when": "editorLangId =~ /^(javascript|javascriptreact|typescript|typescriptreact)$/ && config.flowchartGenerator.showEditorTitleButton",
           "group": "navigation"
         }
+      ],
+      "commandPalette": [
+        {
+          "command": "flowchartGenerator.generate",
+          "when": "editorLangId =~ /^(javascript|javascriptreact|typescript|typescriptreact)$/"
+        },
+        {
+          "command": "flowchartGenerator.generateFile",
+          "when": "editorLangId =~ /^(javascript|javascriptreact|typescript|typescriptreact)$/"
+        },
+        {
+          "command": "flowchartGenerator.codeFromMermaid",
+          "when": "editorIsOpen"
+        }
       ]
+    },
+    "keybindings": [
+      {
+        "command": "flowchartGenerator.generate",
+        "key": "ctrl+alt+g",
+        "mac": "cmd+alt+g",
+        "when": "editorTextFocus && editorLangId =~ /^(javascript|javascriptreact|typescript|typescriptreact)$/"
+      }
+    ],
+    "configuration": {
+      "title": "Flowchart Generator",
+      "properties": {
+        "flowchartGenerator.direction": {
+          "type": "string",
+          "enum": [
+            "TD",
+            "LR"
+          ],
+          "enumDescriptions": [
+            "Top to bottom",
+            "Left to right"
+          ],
+          "default": "TD",
+          "description": "Layout direction of generated flowcharts."
+        },
+        "flowchartGenerator.theme": {
+          "type": "string",
+          "enum": [
+            "auto",
+            "default",
+            "dark",
+            "forest",
+            "neutral"
+          ],
+          "enumDescriptions": [
+            "Follow the active VS Code color theme",
+            "Mermaid light theme",
+            "Mermaid dark theme",
+            "Mermaid forest theme",
+            "Mermaid neutral (print friendly) theme"
+          ],
+          "default": "auto",
+          "description": "Color theme used to render flowcharts."
+        },
+        "flowchartGenerator.maxLabelLength": {
+          "type": "number",
+          "default": 60,
+          "minimum": 10,
+          "maximum": 300,
+          "description": "Maximum number of characters shown in a node before it is truncated."
+        },
+        "flowchartGenerator.mergeSequentialStatements": {
+          "type": "boolean",
+          "default": true,
+          "description": "Group consecutive simple statements into a single block to keep diagrams compact."
+        },
+        "flowchartGenerator.maxStatementsPerBlock": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 20,
+          "description": "Maximum number of statements grouped in one block when merging is enabled."
+        },
+        "flowchartGenerator.codeLens.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show a \"Flowchart\" CodeLens above every function."
+        },
+        "flowchartGenerator.showEditorTitleButton": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show the Generate Flowchart button in the editor title bar."
+        },
+        "flowchartGenerator.openBeside": {
+          "type": "boolean",
+          "default": true,
+          "description": "Open the flowchart panel beside the active editor instead of on top of it."
+        },
+        "flowchartGenerator.historyLimit": {
+          "type": "number",
+          "default": 30,
+          "minimum": 1,
+          "maximum": 200,
+          "description": "Maximum number of flowcharts kept per workspace."
+        }
+      }
     }
   },
   "scripts": {
+    "vscode:prepublish": "npm run package",
+    "compile": "webpack --mode development",
+    "watch": "webpack --mode development --watch",
+    "package": "webpack --mode production",
     "lint": "eslint .",
-    "pretest": "npm run lint",
-    "test": "vscode-test",
-    "build": "webpack --mode production",
-    "watch": "webpack --watch --mode development"
+    "test:unit": "mocha \"test/unit/**/*.test.js\"",
+    "pretest": "npm run compile",
+    "test": "npm run test:unit && vscode-test",
+    "vsix": "vsce package --no-dependencies"
   },
   "devDependencies": {
+    "@babel/core": "^7.28.0",
+    "@babel/parser": "^7.29.0",
+    "@babel/preset-env": "^7.28.0",
+    "@babel/preset-react": "^7.27.0",
+    "@eslint/js": "^9.30.0",
     "@types/mocha": "^10.0.10",
     "@types/node": "20.x",
     "@types/vscode": "^1.96.0",
-    "@vscode/test-cli": "^0.0.10",
-    "@vscode/test-electron": "^2.4.1",
+    "@vscode/test-cli": "^0.0.11",
+    "@vscode/test-electron": "^2.5.2",
+    "@vscode/vsce": "^3.6.0",
+    "babel-loader": "^10.0.0",
     "css-loader": "^7.1.2",
-    "eslint": "^9.16.0",
-    "style-loader": "^4.0.0"
-  },
-  "dependencies": {
-    "@babel/core": "^7.26.0",
-    "@babel/preset-env": "^7.26.0",
-    "@babel/preset-react": "^7.26.3",
-    "@huggingface/inference": "^3.1.2",
-    "acorn": "^8.14.0",
-    "acorn-walk": "^8.3.4",
-    "babel-loader": "^9.2.1",
-    "chart.js": "^4.4.7",
-    "dotenv": "^16.4.7",
-    "mermaid": "^11.4.1",
-    "path": "^0.12.7",
-    "react": "^19.0.0",
-    "react-dom": "^19.0.0",
-    "webpack": "^5.97.1",
+    "eslint": "^9.30.0",
+    "eslint-plugin-react": "^7.37.5",
+    "globals": "^16.3.0",
+    "mermaid": "^11.9.0",
+    "mocha": "^11.7.0",
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "style-loader": "^4.0.0",
+    "webpack": "^5.100.0",
     "webpack-cli": "^6.0.1"
   }
 }

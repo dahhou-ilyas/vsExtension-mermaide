@@ -1,10 +1,21 @@
+# Sources are bundled into dist/ by webpack: ship only the bundle.
 .vscode/**
 .vscode-test/**
+.github/**
+src/**
+webview/**
 test/**
-.gitignore
-.yarnrc
-vsc-extension-quickstart.md
-**/jsconfig.json
+scripts/**
+node_modules/**
+out/**
+media/**
 **/*.map
-**/eslint.config.mjs
-**/.vscode-test.*
+.gitignore
+.editorconfig
+.vscode-test.mjs
+eslint.config.mjs
+webpack.config.js
+jsconfig.json
+CONTRIBUTING.md
+SECURITY.md
+*.vsix

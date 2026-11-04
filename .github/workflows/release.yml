@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      OVSX_PAT: ${{ secrets.OVSX_PAT }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run test:unit
+
+      - name: Package VSIX
+        run: npx vsce package --no-dependencies --out flowchart-generator.vsix
+
+      - name: Publish to the Visual Studio Marketplace
+        run: npx vsce publish --no-dependencies --packagePath flowchart-generator.vsix
+        env:
+          VSCE_PAT: ${{ secrets.AZURE_TOKEN }}
+
+      - name: Publish to Open VSX
+        if: ${{ env.OVSX_PAT != '' }}
+        run: npx --yes ovsx publish flowchart-generator.vsix
+
+      - name: Attach VSIX to the GitHub release
+        if: github.event_name == 'release'
+        run: gh release upload "${{ github.event.release.tag_name }}" flowchart-generator.vsix --clobber
+        env:
+          GH_TOKEN: ${{ github.token }}
