@@ -1,0 +1,26 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "type": "npm",
+            "script": "watch",
+            "problemMatcher": {
+                "owner": "webpack",
+                "pattern": { "regexp": "^ERROR in (.*)$", "file": 1 },
+                "background": {
+                    "activeBegins": true,
+                    "beginsPattern": "webpack .* compiling",
+                    "endsPattern": "compiled (successfully|with)"
+                }
+            },
+            "isBackground": true,
+            "group": { "kind": "build", "isDefault": true }
+        },
+        {
+            "type": "npm",
+            "script": "compile",
+            "problemMatcher": [],
+            "group": "build"
+        }
+    ]
+}

@@ -1,14 +1,11 @@
 {
-	"compilerOptions": {
+    "compilerOptions": {
         "jsx": "react",
-		"module": "Node16",
-		"target": "ES2022",
-		"checkJs": true,  /* Typecheck .js files. */
-		"lib": [
-			"ES2022"
-		]
-	},
-	"exclude": [
-		"node_modules"
-	]
+        "module": "Node16",
+        "target": "ES2022",
+        "checkJs": false,
+        "lib": ["ES2022", "DOM"]
+    },
+    "include": ["src", "webview", "test"],
+    "exclude": ["node_modules", "dist"]
 }

@@ -1,0 +1,24 @@
+name: Bug report
+description: Something does not work as expected
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened?
+      description: Steps to reproduce, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: code
+    attributes:
+      label: Code that produces the problem
+      description: The smallest function or selection that reproduces the issue.
+      render: javascript
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: "Extension 2.0.0, VS Code 1.96, Windows 11"
+    validations:
+      required: true
