@@ -22,6 +22,10 @@ const { STORAGE_KEY } = require('./constants');
  * @property {Array<{severity: 'warning' | 'info', code: string, message: string, unit: string, range: Span}>} insights
  * @property {{nodes: number, edges: number, unreachable: number}} stats
  * @property {{ preferClassMember: boolean, nameHint?: string, wholeFile: boolean }} [generation]  How to regenerate it
+ * @property {import('./core/graph').Graph} [graph]  Graph model, editable in the panel
+ * @property {'code' | 'designer' | 'mermaid'} [origin]
+ * @property {string} [sourceHash]  Hash of the source the flowchart was generated from
+ * @property {boolean} [edited]     The graph was edited in the panel
  * @property {number} createdAt
  */
 
@@ -59,7 +63,7 @@ class DiagramStore {
      * @param {DiagramRecord} diagram
      */
     async upsert(diagram) {
-        const sameSource = (d) => d.uri === diagram.uri
+        const sameSource = (d) => !!diagram.uri && d.uri === diagram.uri
             && d.range.start.line === diagram.range.start.line
             && d.range.start.character === diagram.range.start.character
             && d.range.end.line === diagram.range.end.line
@@ -67,6 +71,18 @@ class DiagramStore {
         const previous = this.diagrams.find(sameSource);
         if (previous) diagram.id = previous.id;
         this.diagrams = [diagram, ...this.diagrams.filter((d) => !sameSource(d))].slice(0, this.getLimit());
+        await this.persist();
+        return diagram;
+    }
+
+    /**
+     * Replaces a diagram in place (same position in the list).
+     * @param {DiagramRecord} diagram
+     */
+    async replace(diagram) {
+        const index = this.diagrams.findIndex((d) => d.id === diagram.id);
+        if (index < 0) return this.upsert(diagram);
+        this.diagrams = [...this.diagrams.slice(0, index), diagram, ...this.diagrams.slice(index + 1)];
         await this.persist();
         return diagram;
     }

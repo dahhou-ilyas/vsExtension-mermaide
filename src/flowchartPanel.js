@@ -14,11 +14,17 @@ class FlowchartPanel {
      * @param {vscode.ExtensionContext} context
      * @param {import('./diagramStore').DiagramStore} store
      * @param {import('./flowchartService').FlowchartService} service
+     * @param {import('./codeActions').CodeActions} codeActions
+     * @param {() => vscode.TextEditor | undefined} lastEditor  Last focused text editor
      */
-    constructor(context, store, service) {
+    constructor(context, store, service, codeActions, lastEditor) {
         this.context = context;
         this.store = store;
         this.service = service;
+        this.codeActions = codeActions;
+        this.lastEditor = lastEditor;
+        /** @type {string | undefined} */
+        this.editId = undefined;
         /** @type {vscode.WebviewPanel | undefined} */
         this.panel = undefined;
         this.ready = false;
@@ -30,11 +36,13 @@ class FlowchartPanel {
     }
 
     /**
-     * Shows the panel, optionally scrolling to a diagram.
+     * Shows the panel, optionally scrolling to a diagram (and opening its editor).
      * @param {string} [focusId]
+     * @param {{ edit?: boolean }} [options]
      */
-    show(focusId) {
+    show(focusId, options = {}) {
         this.focusId = focusId;
+        this.editId = options.edit ? focusId : undefined;
         const column = getSettings().openBeside ? vscode.ViewColumn.Beside : vscode.ViewColumn.Active;
         if (this.panel) {
             this.panel.reveal(column, true);
@@ -95,10 +103,12 @@ class FlowchartPanel {
         this.panel.webview.postMessage({
             type: ToWebview.STATE,
             diagrams: this.store.all(),
-            settings: { theme: settings.theme },
-            focusId: this.focusId
+            settings: { theme: settings.theme, maxLabelLength: settings.maxLabelLength },
+            focusId: this.focusId,
+            editId: this.editId
         });
         this.focusId = undefined;
+        this.editId = undefined;
     }
 
     /** @param {any} message */
@@ -134,6 +144,20 @@ class FlowchartPanel {
                     if (record) this.focusId = record.id;
                     break;
                 }
+                case FromWebview.SAVE_GRAPH:
+                    await this.codeActions.saveGraph(message.id, message.graph);
+                    break;
+                case FromWebview.APPLY_CODE: {
+                    const record = await this.codeActions.applyToSource(message.id, message.graph);
+                    if (record) this.show(record.id);
+                    break;
+                }
+                case FromWebview.OPEN_CODE:
+                    await this.codeActions.openCode(message.id, message.graph);
+                    break;
+                case FromWebview.INSERT_CODE:
+                    await this.codeActions.insertCode(message.id, message.graph, this.lastEditor());
+                    break;
                 case FromWebview.ERROR:
                     vscode.window.showErrorMessage(`Flowchart Generator: ${message.message}`);
                     break;

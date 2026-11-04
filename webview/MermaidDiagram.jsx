@@ -9,17 +9,21 @@ export const clampZoom = (z) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.round
 /**
  * Renders one Mermaid definition, with zoom, drag-to-pan and clickable nodes.
  */
-export default function MermaidDiagram({ code, theme, zoom, onZoom, onNodeClick, svgRef, nodeLines, highlightNodeId }) {
+export default function MermaidDiagram({ code, theme, zoom, onZoom, onNodeClick, svgRef, nodeLines, highlightNodeId, tooltip }) {
     const viewportRef = useRef(null);
     const hostRef = useRef(null);
     const sizeRef = useRef(null);
     const [error, setError] = useState(null);
     const [loading, setLoading] = useState(true);
+    // Node listeners are attached once per render of the SVG: always call the latest callback.
+    const clickRef = useRef(onNodeClick);
+    clickRef.current = onNodeClick;
 
     // Render (or re-render when the code or theme changes).
     useEffect(() => {
         let cancelled = false;
         setLoading(true);
+        if (!code) return undefined;
         renderMermaid(code, theme)
             .then((svg) => {
                 if (cancelled || !hostRef.current) return;
@@ -41,14 +45,14 @@ export default function MermaidDiagram({ code, theme, zoom, onZoom, onNodeClick,
                     node.classList.add('fc-clickable');
                     node.setAttribute('data-node', nodeId);
                     const line = nodeLines && nodeLines[nodeId];
-                    const tooltip = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-                    tooltip.textContent = line ? `Line ${line} — click to open in the editor` : 'Click to open in the editor';
-                    node.insertBefore(tooltip, node.firstChild);
+                    const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+                    title.textContent = tooltip || (line ? `Line ${line} — click to open in the editor` : 'Click to open in the editor');
+                    node.insertBefore(title, node.firstChild);
                     node.setAttribute('tabindex', '0');
                     node.setAttribute('role', 'button');
                     const activate = (event) => {
                         event.stopPropagation();
-                        onNodeClick && onNodeClick(nodeId);
+                        if (clickRef.current) clickRef.current(nodeId);
                     };
                     node.addEventListener('click', activate);
                     node.addEventListener('keydown', (event) => {

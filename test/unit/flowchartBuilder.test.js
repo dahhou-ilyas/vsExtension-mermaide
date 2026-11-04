@@ -1,7 +1,8 @@
 'use strict';
 
 const assert = require('assert');
-const { buildFlowchart, escapeLabel, FlowchartParseError } = require('../../src/core/flowchartBuilder');
+const { buildFlowchart, FlowchartParseError } = require('../../src/core/flowchartBuilder');
+const { escapeLabel } = require('../../src/core/graph');
 const { assertWellFormed, findNode, edgesFrom } = require('./helpers');
 
 describe('buildFlowchart', () => {

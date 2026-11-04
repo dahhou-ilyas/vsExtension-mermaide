@@ -3,6 +3,19 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [2.1.0] - 2026-11-04
+
+### Added
+- **Flowchart → code**: edit a chart visually (edit nodes, insert steps / conditions / loops / returns / throws, delete, rename the function) with a live preview of the generated code and undo / redo.
+- **Apply to source** with a diff preview. The original indentation is kept, and the change is refused if the source changed since the chart was generated.
+- **Flowchart: New Flowchart** command to design a function from scratch, with **Insert at cursor** and **Open as new file**.
+- **Flowchart: Generate Code from Mermaid Flowchart** command, which imports any Mermaid flowchart (Markdown blocks included) and generates its code.
+- Structured code generation (if / else if, loops, switch with fall-through, try / catch / finally, labeled break / continue only when needed) with an equivalent state-machine fallback for unstructured charts.
+- Round-trip tests that execute the original and the regenerated code and compare their results.
+
+### Changed
+- Flowcharts are now stored as an editable graph that keeps the full source of every node. Labels are only truncated for display.
+
 ## [2.0.0] - 2026-11-04
 
 A complete rewrite of the extension.

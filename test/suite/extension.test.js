@@ -21,7 +21,14 @@ describe('Flowchart Generator (integration)', function () {
     it('registers its commands', async () => {
         await api();
         const commands = await vscode.commands.getCommands(true);
-        for (const id of ['flowchartGenerator.generate', 'flowchartGenerator.generateFile', 'flowchartGenerator.showPanel', 'flowchartGenerator.clearHistory']) {
+        for (const id of [
+            'flowchartGenerator.generate',
+            'flowchartGenerator.generateFile',
+            'flowchartGenerator.showPanel',
+            'flowchartGenerator.clearHistory',
+            'flowchartGenerator.newFlowchart',
+            'flowchartGenerator.codeFromMermaid'
+        ]) {
             assert.ok(commands.includes(id), `missing command ${id}`);
         }
     });
@@ -41,6 +48,7 @@ describe('Flowchart Generator (integration)', function () {
         assert.match(record.mermaid, /^flowchart TD/);
         assert.strictEqual(record.range.start.line, 0);
         assert.ok(Object.keys(record.nodes).length > 0, 'nodes are mapped to source ranges');
+        assert.ok(record.graph && record.graph.nodes.length > 0, 'the editable graph is stored');
     });
 
     it('generates a flowchart from a selection', async () => {
@@ -69,5 +77,21 @@ describe('Flowchart Generator (integration)', function () {
         });
         assert.ok(record);
         assert.strictEqual(record.title, 'run');
+    });
+
+    it('generates code from a Mermaid flowchart', async () => {
+        const { store } = await api();
+        const document = await vscode.workspace.openTextDocument({
+            language: 'markdown',
+            content: '```mermaid\nflowchart TD\n  A([abs(x)]) --> B{x < 0}\n  B -->|yes| C[x = -x]\n  B -->|no| D(return x)\n  C --> D\n```\n'
+        });
+        const editor = await vscode.window.showTextDocument(document);
+        editor.selection = new vscode.Selection(2, 0, 2, 0);
+        const record = await vscode.commands.executeCommand('flowchartGenerator.codeFromMermaid');
+        assert.ok(record, 'a flowchart record is created');
+        assert.strictEqual(record.origin, 'mermaid');
+        assert.ok(store.get(record.id));
+        const generated = vscode.window.visibleTextEditors.find((e) => e.document.getText().startsWith('function abs(x)'));
+        assert.ok(generated, 'the generated code is opened');
     });
 });

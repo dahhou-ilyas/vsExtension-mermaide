@@ -18,6 +18,10 @@ const FromWebview = Object.freeze({
     OPEN_MARKDOWN: 'openMarkdown',
     EXPORT: 'export',
     REGENERATE: 'regenerate',
+    SAVE_GRAPH: 'saveGraph',
+    APPLY_CODE: 'applyCode',
+    OPEN_CODE: 'openCode',
+    INSERT_CODE: 'insertCode',
     ERROR: 'error'
 });
 

@@ -3,6 +3,8 @@
 const vscode = require('vscode');
 const crypto = require('crypto');
 const { buildFlowchart, FlowchartParseError } = require('./core/flowchartBuilder');
+const { GraphEditError } = require('./core/graphEdit');
+const { MermaidImportError } = require('./core/mermaidImport');
 const { locateFunctions, findFunctionAt } = require('./core/functionLocator');
 const { SUPPORTED_LANGUAGES, SUPPORTED_EXTENSIONS, MESSAGES } = require('./constants');
 const { getSettings } = require('./config');
@@ -36,6 +38,11 @@ function parserLanguage(document) {
     if (extension === 'tsx') return 'typescriptreact';
     if (['ts', 'mts', 'cts'].includes(extension)) return 'typescript';
     return 'javascriptreact';
+}
+
+/** Short stable hash, used to detect that the source changed. */
+function hash(text) {
+    return crypto.createHash('sha1').update(String(text).replace(/\r\n/g, '\n')).digest('hex').slice(0, 16);
 }
 
 /** @param {vscode.Position} p */
@@ -149,6 +156,9 @@ class FlowchartService {
             id: crypto.randomUUID(),
             title: target.wholeFile ? document.fileName.split(/[\\/]/).pop() : result.title,
             mermaid: result.mermaid,
+            graph: result.graph,
+            origin: 'code',
+            sourceHash: hash(code),
             uri: document.uri.toString(),
             fileName: document.isUntitled ? document.fileName : vscode.workspace.asRelativePath(document.uri, false),
             languageId: document.languageId,
@@ -212,6 +222,10 @@ class FlowchartService {
      * @param {vscode.Position} origin  Position of the parsed code in the document
      */
     reportError(error, origin) {
+        if (error instanceof GraphEditError || error instanceof MermaidImportError) {
+            vscode.window.showErrorMessage(`Flowchart Generator: ${error.message}`);
+            return;
+        }
         if (error instanceof FlowchartParseError) {
             let where = '';
             if (error.loc) {
@@ -231,4 +245,4 @@ class FlowchartService {
     }
 }
 
-module.exports = { FlowchartService, isSupportedDocument, parserLanguage };
+module.exports = { FlowchartService, isSupportedDocument, parserLanguage, hash };

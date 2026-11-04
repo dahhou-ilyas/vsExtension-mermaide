@@ -20,7 +20,7 @@ function useVsCodeTheme(setting) {
 export default function App() {
     const [diagrams, setDiagrams] = useState([]);
     const [settings, setSettings] = useState({ theme: 'auto' });
-    const [focus, setFocus] = useState({ id: undefined, tick: 0 });
+    const [focus, setFocus] = useState({ id: undefined, tick: 0, edit: false });
     const [received, setReceived] = useState(false);
     const [filter, setFilter] = useState(() => getState().filter || '');
     const [zooms, setZooms] = useState(() => getState().zooms || {});
@@ -38,7 +38,7 @@ export default function App() {
             if (!message || message.type !== 'state') return;
             setDiagrams(Array.isArray(message.diagrams) ? message.diagrams : []);
             if (message.settings) setSettings(message.settings);
-            if (message.focusId) setFocus((f) => ({ id: message.focusId, tick: f.tick + 1 }));
+            if (message.focusId) setFocus((f) => ({ id: message.focusId, tick: f.tick + 1, edit: message.editId === message.focusId }));
             setReceived(true);
         };
         window.addEventListener('message', onMessage);
@@ -106,6 +106,7 @@ export default function App() {
                         <li>Place the cursor inside a function, or select some code.</li>
                         <li>Press <kbd>{isMac ? '⌘' : 'Ctrl'}</kbd>+<kbd>{isMac ? '⌥' : 'Alt'}</kbd>+<kbd>G</kbd>, click the <em>Flowchart</em> CodeLens, or right-click → <em>Generate Flowchart</em>.</li>
                         <li>Click any node to jump to the matching line of code.</li>
+                        <li>Click <em>Edit</em> on a chart to change it and generate the code back, or run <em>Flowchart: New Flowchart</em> to design a function from scratch.</li>
                     </ol>
                 </section>
             ) : null}
@@ -126,6 +127,8 @@ export default function App() {
                         onZoomChange={onZoomChange}
                         highlightNodeId={highlights[diagram.id]}
                         detailsOpen={!!details[diagram.id]}
+                        startEditing={focus.edit && focus.id === diagram.id}
+                        maxLabelLength={settings.maxLabelLength}
                         onToggleDetails={onToggleDetails}
                     />
                 ))}

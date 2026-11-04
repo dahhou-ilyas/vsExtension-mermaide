@@ -6,7 +6,9 @@ const COMMANDS = Object.freeze({
     GENERATE: `${EXTENSION_ID}.generate`,
     GENERATE_FILE: `${EXTENSION_ID}.generateFile`,
     SHOW_PANEL: `${EXTENSION_ID}.showPanel`,
-    CLEAR_HISTORY: `${EXTENSION_ID}.clearHistory`
+    CLEAR_HISTORY: `${EXTENSION_ID}.clearHistory`,
+    NEW_FLOWCHART: `${EXTENSION_ID}.newFlowchart`,
+    CODE_FROM_MERMAID: `${EXTENSION_ID}.codeFromMermaid`
 });
 
 const VIEW_TYPE = `${EXTENSION_ID}.panel`;
@@ -26,7 +28,12 @@ const MESSAGES = Object.freeze({
     CLEAR_CONFIRM: 'Remove all flowcharts from this workspace?',
     CLEAR: 'Clear',
     COPIED: 'Mermaid definition copied to the clipboard.',
-    SOURCE_MISSING: 'The source file for this flowchart could not be opened. It may have been moved or deleted.'
+    SOURCE_MISSING: 'The source file for this flowchart could not be opened. It may have been moved or deleted.',
+    SOURCE_CHANGED: 'The source code changed since this flowchart was generated. Regenerate the flowchart, or open the generated code in a new editor.',
+    APPLY_CONFIRM: 'Replace the original code with the code generated from the flowchart? Review the differences in the diff editor.',
+    REPLACE: 'Replace',
+    OPEN_NEW: 'Open in New Editor',
+    NO_TARGET_EDITOR: 'Open a file and place the cursor where the code should be inserted.'
 });
 
 module.exports = { EXTENSION_ID, COMMANDS, VIEW_TYPE, STORAGE_KEY, SUPPORTED_LANGUAGES, SUPPORTED_EXTENSIONS, MESSAGES };

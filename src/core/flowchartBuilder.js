@@ -2,6 +2,7 @@
 
 const { parseCode, FlowchartParseError, WRAPPER_CLASS } = require('./parse');
 const { analyzeUnit } = require('./metrics');
+const { GRAPH_VERSION, collapse, toMermaid } = require('./graph');
 
 /**
  * @typedef {Object} BuildOptions
@@ -22,6 +23,7 @@ const { analyzeUnit } = require('./metrics');
  * @property {number} end
  *
  * @typedef {Object} FlowchartResult
+ * @property {import('./graph').Graph} graph Graph model (source of truth for display and code generation)
  * @property {string} mermaid                 Mermaid flowchart definition
  * @property {string} title                   Human readable title
  * @property {FlowchartUnit[]} units          One entry per function / top-level block
@@ -70,81 +72,6 @@ const NON_EXECUTABLE = new Set([
 ]);
 
 const LOOP_TYPES = new Set(['WhileStatement', 'ForStatement', 'ForInStatement', 'ForOfStatement', 'DoWhileStatement']);
-
-const SHAPES = {
-    start: ['([', '])'],
-    end: ['([', '])'],
-    process: ['[', ']'],
-    decision: ['{', '}'],
-    loop: ['{{', '}}'],
-    return: ['(', ')'],
-    throw: ['>', ']'],
-    try: ['[[', ']]'],
-    catch: ['[[', ']]'],
-    finally: ['[[', ']]'],
-    junction: ['((', '))']
-};
-
-const CLASS_BY_KIND = {
-    start: 'cfStart',
-    end: 'cfEnd',
-    decision: 'cfDecision',
-    loop: 'cfLoop',
-    return: 'cfReturn',
-    throw: 'cfThrow',
-    try: 'cfTry',
-    catch: 'cfTry',
-    finally: 'cfTry',
-    junction: 'cfJunction'
-};
-
-const CLASS_DEFS = [
-    'classDef cfStart fill:#2e7d32,stroke:#1b5e20,color:#ffffff,stroke-width:2px',
-    'classDef cfEnd fill:#455a64,stroke:#263238,color:#ffffff,stroke-width:2px',
-    'classDef cfDecision fill:#ffca28,stroke:#f57f17,color:#1a1a1a',
-    'classDef cfLoop fill:#7e57c2,stroke:#4527a0,color:#ffffff',
-    'classDef cfReturn fill:#1e88e5,stroke:#0d47a1,color:#ffffff',
-    'classDef cfThrow fill:#e53935,stroke:#b71c1c,color:#ffffff',
-    'classDef cfTry fill:#fb8c00,stroke:#e65100,color:#ffffff',
-    'classDef cfJunction fill:#90a4ae,stroke:#546e7a,color:#1a1a1a',
-    'classDef cfAsync stroke:#00acc1,stroke-width:3px',
-    'classDef cfUnreachable fill:#bdbdbd,stroke:#757575,color:#424242,stroke-dasharray:5 4'
-];
-
-/* ------------------------------------------------------------------------- */
-/* Helpers                                                                    */
-/* ------------------------------------------------------------------------- */
-
-function collapse(text) {
-    return String(text).replace(/\s+/g, ' ').trim();
-}
-
-function truncate(text, max) {
-    return text.length > max ? `${text.slice(0, Math.max(1, max - 1)).trimEnd()}…` : text;
-}
-
-/**
- * Escapes a label so it can be used inside a quoted Mermaid string rendered as SVG text.
- *
- * Only `#lt;`, `#gt;` and `#amp;` are reliably decoded by Mermaid in SVG-text mode,
- * so double quotes (which would close the string) are rendered as single quotes,
- * `#word;` sequences are broken with a zero-width space so they are not read as
- * entities, and a leading backtick is guarded so it is not parsed as a Markdown string.
- */
-function escapeLabel(text) {
-    let label = String(text)
-        .replace(/&/g, '#amp;')
-        .replace(/</g, '#lt;')
-        .replace(/>/g, '#gt;')
-        .replace(/"/g, "'")
-        .replace(/#(?!(?:amp|lt|gt);)(?=\w+;)/g, '#\u200B');
-    if (label.startsWith('`')) label = `\u200B${label}`;
-    return label;
-}
-
-function escapeEdgeLabel(text) {
-    return escapeLabel(text).replace(/\|/g, '\u2223');
-}
 
 function isFunctionNode(node) {
     return !!node && FUNCTION_TYPES.has(node.type);
@@ -231,22 +158,25 @@ class FlowchartBuilder {
         return this.text.slice(node.start, node.end);
     }
 
-    label(node) {
-        return truncate(collapse(this.src(node)).replace(/;$/, ''), this.options.maxLabelLength);
-    }
-
     rel(pos) {
         return Math.max(0, pos - this.offset);
     }
 
     /* ---------- graph primitives ---------- */
 
-    addNode(kind, label, astNode) {
+    /**
+     * @param {string} kind
+     * @param {string[]} code   Raw code of the node
+     * @param {{start: number, end: number}} [astNode]  Source range
+     * @param {Object} [meta]
+     */
+    addNode(kind, code, astNode, meta = {}) {
         const id = `n${this.counter++}`;
         const node = {
             id,
             kind,
-            lines: [label],
+            code,
+            meta,
             start: astNode ? this.rel(astNode.start) : undefined,
             end: astNode ? this.rel(astNode.end) : undefined,
             unit: this.unitIndex,
@@ -259,13 +189,15 @@ class FlowchartBuilder {
         return id;
     }
 
-    addEdge(from, to, label = '') {
-        this.edges.push({ from, to, label });
+    addEdge(from, to, label = '', code = undefined) {
+        const edge = { from, to, label };
+        if (code !== undefined) edge.code = code;
+        this.edges.push(edge);
     }
 
     connect(frontier, to) {
         for (const item of frontier) {
-            this.addEdge(item.id, to, item.label || '');
+            this.addEdge(item.id, to, item.label || '', item.code);
         }
         return [{ id: to }];
     }
@@ -291,21 +223,49 @@ class FlowchartBuilder {
         return fallback || this.options.nameHint || 'anonymous';
     }
 
-    signature(fn, name) {
+    /** Everything needed to display and re-generate a function header. */
+    startMeta(unit) {
+        if (unit.kind === 'main') return { isMain: true };
+        if (unit.kind === 'block') return { blockName: unit.name };
+        const fn = unit.fn;
+        const context = unit.context || {};
         const params = fn.params && fn.params.length
-            ? collapse(this.text.slice(fn.params[0].start, fn.params[fn.params.length - 1].end))
+            ? this.text.slice(fn.params[0].start, fn.params[fn.params.length - 1].end)
             : '';
-        const prefixes = [];
-        if (fn.static) prefixes.push('static');
-        if (fn.async) prefixes.push('async');
-        if (fn.kind === 'get' || fn.kind === 'set') prefixes.push(fn.kind);
-        const star = fn.generator ? '*' : '';
-        const prefix = prefixes.length ? `${prefixes.join(' ')} ` : '';
-        return truncate(`${prefix}${star}${name}(${params})`, Math.max(this.options.maxLabelLength, 40));
+        const owner = context.member || fn;
+        let fnKind = context.fnKind;
+        if (!fnKind) {
+            if (fn.type === 'FunctionDeclaration') fnKind = 'function';
+            else if (/^(ClassMethod|ClassPrivateMethod|ObjectMethod)$/.test(fn.type)) fnKind = 'method';
+            else fnKind = 'expression';
+        }
+        return {
+            fnKind,
+            name: context.shortName || this.functionName(fn),
+            displayName: unit.name,
+            params,
+            async: !!fn.async,
+            generator: !!fn.generator,
+            static: !!owner.static,
+            accessor: fn.kind === 'get' || fn.kind === 'set' ? fn.kind : undefined,
+            isArrow: fn.type === 'ArrowFunctionExpression',
+            returnType: fn.returnType ? this.src(fn.returnType) : '',
+            typeParameters: fn.typeParameters ? this.src(fn.typeParameters) : '',
+            declKind: context.declKind,
+            target: context.target,
+            exported: !!context.exported,
+            exportDefault: !!context.exportDefault
+        };
     }
 
-    addFunctionUnit(fn, name, rangeNode) {
-        this.units.push({ kind: 'function', name, fn, rangeNode: rangeNode || fn });
+    addFunctionUnit(fn, name, rangeNode, context = {}) {
+        this.units.push({ kind: 'function', name, fn, rangeNode: rangeNode || fn, context });
+    }
+
+    /** Source form of a class member key (`name`, `#name`, `[expr]`, `'str'`). */
+    memberKey(member) {
+        const key = this.src(member.key);
+        return member.computed ? `[${key}]` : key;
     }
 
     collectClass(classNode, className) {
@@ -314,10 +274,10 @@ class FlowchartBuilder {
             const memberName = this.functionName(member, 'member');
             const fullName = isWrapper ? memberName : `${className}.${memberName}`;
             if (member.type === 'ClassMethod' || member.type === 'ClassPrivateMethod') {
-                if (member.body) this.addFunctionUnit(member, fullName);
+                if (member.body) this.addFunctionUnit(member, fullName, member, { fnKind: 'method', shortName: this.memberKey(member) });
             } else if ((member.type === 'ClassProperty' || member.type === 'ClassPrivateProperty' || member.type === 'ClassAccessorProperty')
                 && isFunctionNode(member.value)) {
-                this.addFunctionUnit(member.value, fullName, member);
+                this.addFunctionUnit(member.value, fullName, member, { fnKind: 'field', shortName: this.memberKey(member), member });
             } else if (member.type === 'StaticBlock') {
                 this.units.push({ kind: 'block', name: `${isWrapper ? '' : `${className} `}static {}`, statements: member.body, rangeNode: member });
             }
@@ -330,21 +290,33 @@ class FlowchartBuilder {
      */
     collectUnits(program) {
         const main = [];
+        const exportParents = new Map();
+        const exportedBy = (decl) => {
+            const parent = exportParents.get(decl);
+            if (!parent) return false;
+            return true;
+        };
         const visit = (stmt) => {
             switch (stmt.type) {
                 case 'FunctionDeclaration':
-                    this.addFunctionUnit(stmt, this.functionName(stmt), stmt);
+                    this.addFunctionUnit(stmt, this.functionName(stmt), exportParents.get(stmt) || stmt, { fnKind: 'function', exported: exportedBy(stmt) });
                     return;
                 case 'ClassDeclaration':
                     this.collectClass(stmt, stmt.id ? stmt.id.name : 'AnonymousClass');
                     return;
                 case 'ExportNamedDeclaration':
-                    if (stmt.declaration) visit(stmt.declaration);
+                    if (stmt.declaration) {
+                        exportParents.set(stmt.declaration, stmt);
+                        visit(stmt.declaration);
+                    }
                     return;
                 case 'ExportDefaultDeclaration': {
                     const decl = stmt.declaration;
                     if (isFunctionNode(decl)) {
-                        this.addFunctionUnit(decl, decl.id ? decl.id.name : 'default', stmt);
+                        this.addFunctionUnit(decl, decl.id ? decl.id.name : 'default', stmt, {
+                            fnKind: decl.type === 'FunctionDeclaration' ? 'function' : 'expression',
+                            exportDefault: true
+                        });
                     } else if (decl.type === 'ClassDeclaration' || decl.type === 'ClassExpression') {
                         this.collectClass(decl, decl.id ? decl.id.name : 'default');
                     } else {
@@ -359,7 +331,14 @@ class FlowchartBuilder {
                         if (d.init.type === 'ClassExpression') {
                             this.collectClass(d.init, name);
                         } else {
-                            this.addFunctionUnit(d.init, name, stmt.declarations.length === 1 ? stmt : d);
+                            const single = stmt.declarations.length === 1;
+                            const exportNode = exportParents.get(stmt);
+                            this.addFunctionUnit(d.init, name, single ? (exportNode || stmt) : d, {
+                                fnKind: 'variable',
+                                shortName: name,
+                                declKind: stmt.kind,
+                                exported: !!exportNode
+                            });
                         }
                     }
                     if (fnDecls.length !== stmt.declarations.length) main.push(stmt);
@@ -368,7 +347,7 @@ class FlowchartBuilder {
                 case 'ExpressionStatement': {
                     const expr = stmt.expression;
                     if (isFunctionNode(expr)) {
-                        this.addFunctionUnit(expr, this.functionName(expr), stmt);
+                        this.addFunctionUnit(expr, this.functionName(expr), stmt, { fnKind: 'expression' });
                         return;
                     }
                     if (expr.type === 'ClassExpression') {
@@ -376,7 +355,8 @@ class FlowchartBuilder {
                         return;
                     }
                     if (expr.type === 'AssignmentExpression' && isFunctionNode(expr.right)) {
-                        this.addFunctionUnit(expr.right, collapse(this.src(expr.left)), stmt);
+                        const target = collapse(this.src(expr.left));
+                        this.addFunctionUnit(expr.right, target, stmt, { fnKind: 'assignment', target });
                         return;
                     }
                     main.push(stmt);
@@ -451,7 +431,7 @@ class FlowchartBuilder {
     }
 
     processSimple(stmt, frontier) {
-        const label = this.label(stmt);
+        const code = this.src(stmt);
         const isAsync = /\bawait\b/.test(this.src(stmt));
         const { mergeSequentialStatements, maxStatementsPerBlock } = this.options;
 
@@ -459,21 +439,21 @@ class FlowchartBuilder {
             const prev = this.nodeById.get(frontier[0].id);
             if (prev && prev.kind === 'process' && prev.mergeable
                 && prev.unreachable === this.unreachable
-                && prev.lines.length < maxStatementsPerBlock) {
-                prev.lines.push(label);
+                && prev.code.length < maxStatementsPerBlock) {
+                prev.code.push(code);
                 prev.end = this.rel(stmt.end);
                 prev.async = prev.async || isAsync;
                 return frontier;
             }
         }
 
-        const id = this.addNode('process', label, stmt);
+        const id = this.addNode('process', [code], stmt);
         this.nodeById.get(id).async = isAsync;
         return this.connect(frontier, id);
     }
 
     processIf(stmt, frontier, ctx) {
-        const id = this.addNode('decision', truncate(`if (${collapse(this.src(stmt.test))})`, this.options.maxLabelLength), stmt.test);
+        const id = this.addNode('decision', [this.src(stmt.test)], stmt.test, { subtype: 'if' });
         this.connect(frontier, id);
         const thenOut = this.processStatement(stmt.consequent, [{ id, label: 'yes' }], ctx);
         const elseOut = stmt.alternate
@@ -482,14 +462,12 @@ class FlowchartBuilder {
         return [...thenOut, ...elseOut];
     }
 
-    loopHeaderLabel(stmt) {
-        if (stmt.type === 'WhileStatement') return `while (${collapse(this.src(stmt.test))})`;
-        return collapse(this.text.slice(stmt.start, stmt.body.start));
-    }
-
     processLoop(stmt, frontier, ctx, labels) {
-        const header = this.addNode('loop', truncate(this.loopHeaderLabel(stmt), this.options.maxLabelLength),
-            { start: stmt.start, end: stmt.body.start });
+        const subtype = { WhileStatement: 'while', ForStatement: 'for', ForInStatement: 'forin', ForOfStatement: 'forof' }[stmt.type];
+        const header = this.addNode('loop', [stmt.test ? this.src(stmt.test) : ''], { start: stmt.start, end: stmt.body.start }, {
+            subtype,
+            header: this.text.slice(stmt.start, stmt.body.start).trim()
+        });
         this.connect(frontier, header);
 
         const isIteration = stmt.type === 'ForInStatement' || stmt.type === 'ForOfStatement';
@@ -505,9 +483,9 @@ class FlowchartBuilder {
     }
 
     processDoWhile(stmt, frontier, ctx, labels) {
-        const entry = this.addNode('junction', 'do', { start: stmt.start, end: stmt.body.start });
+        const entry = this.addNode('junction', [], { start: stmt.start, end: stmt.body.start }, { subtype: 'do' });
         this.connect(frontier, entry);
-        const test = this.addNode('loop', truncate(`while (${collapse(this.src(stmt.test))})`, this.options.maxLabelLength), stmt.test);
+        const test = this.addNode('loop', [this.src(stmt.test)], stmt.test, { subtype: 'dowhile' });
 
         const jump = { type: 'loop', labels, continueTarget: test, breaks: [] };
         const bodyOut = this.processStatement(stmt.body, [{ id: entry }], { ...ctx, jumps: [...ctx.jumps, jump] });
@@ -518,7 +496,7 @@ class FlowchartBuilder {
     }
 
     processSwitch(stmt, frontier, ctx, labels) {
-        const id = this.addNode('decision', truncate(`switch (${collapse(this.src(stmt.discriminant))})`, this.options.maxLabelLength), stmt.discriminant);
+        const id = this.addNode('decision', [this.src(stmt.discriminant)], stmt.discriminant, { subtype: 'switch' });
         this.connect(frontier, id);
 
         const jump = { type: 'switch', labels, breaks: [] };
@@ -528,8 +506,10 @@ class FlowchartBuilder {
 
         for (const switchCase of stmt.cases) {
             if (!switchCase.test) hasDefault = true;
-            const caseLabel = switchCase.test ? truncate(`case ${collapse(this.src(switchCase.test))}`, 30) : 'default';
-            const entry = [{ id, label: caseLabel }, ...fallthrough];
+            const entry = [
+                switchCase.test ? { id, label: 'case', code: this.src(switchCase.test) } : { id, label: 'default' },
+                ...fallthrough
+            ];
             fallthrough = this.processList(switchCase.consequent, entry, caseCtx);
         }
 
@@ -539,13 +519,14 @@ class FlowchartBuilder {
     }
 
     processTry(stmt, frontier, ctx) {
-        const tryId = this.addNode('try', 'try', { start: stmt.start, end: stmt.block.start + 1 });
+        const tryId = this.addNode('try', [], { start: stmt.start, end: stmt.block.start + 1 }, {});
+        const tryMeta = this.nodeById.get(tryId).meta;
         this.connect(frontier, tryId);
 
         let catchId = null;
         if (stmt.handler) {
-            const param = stmt.handler.param ? `catch (${collapse(this.src(stmt.handler.param))})` : 'catch';
-            catchId = this.addNode('catch', truncate(param, this.options.maxLabelLength), { start: stmt.handler.start, end: stmt.handler.body.start + 1 });
+            catchId = this.addNode('catch', stmt.handler.param ? [this.src(stmt.handler.param)] : [], { start: stmt.handler.start, end: stmt.handler.body.start + 1 });
+            tryMeta.catchId = catchId;
             this.addEdge(tryId, catchId, 'error');
         }
 
@@ -554,9 +535,14 @@ class FlowchartBuilder {
         const catchOut = catchId ? this.processList(stmt.handler.body.body, [{ id: catchId }], ctx) : [];
 
         if (stmt.finalizer) {
-            const finallyId = this.addNode('finally', 'finally', { start: stmt.finalizer.start, end: stmt.finalizer.start + 1 });
+            const finallyId = this.addNode('finally', [], { start: stmt.finalizer.start, end: stmt.finalizer.start + 1 });
+            tryMeta.finallyId = finallyId;
             this.connect([...tryOut, ...catchOut], finallyId);
-            return this.processList(stmt.finalizer.body, [{ id: finallyId }], ctx);
+            this.seal([{ id: finallyId }]);
+            const out = this.seal(this.processList(stmt.finalizer.body, [{ id: finallyId }], ctx));
+            // Where the finally block ends, so code generation can close it.
+            this.nodeById.get(finallyId).meta.exits = out.map((f) => ({ id: f.id, label: f.label || '' }));
+            return out;
         }
         return [...tryOut, ...catchOut];
     }
@@ -577,14 +563,14 @@ class FlowchartBuilder {
     }
 
     processReturn(stmt, frontier, ctx) {
-        const id = this.addNode('return', this.label(stmt), stmt);
+        const id = this.addNode('return', [this.src(stmt)], stmt);
         this.connect(frontier, id);
         this.addEdge(id, ctx.exitId);
         return [];
     }
 
     processThrow(stmt, frontier, ctx) {
-        const id = this.addNode('throw', this.label(stmt), stmt);
+        const id = this.addNode('throw', [this.src(stmt)], stmt);
         this.connect(frontier, id);
         if (ctx.catchTarget) {
             this.addEdge(id, ctx.catchTarget, 'caught');
@@ -606,7 +592,7 @@ class FlowchartBuilder {
         const target = this.findJump(ctx, stmt.label && stmt.label.name, (j) => j.type === 'loop' || j.type === 'switch');
         if (!target) return frontier;
         for (const item of frontier) {
-            target.breaks.push({ id: item.id, label: item.label || 'break' });
+            target.breaks.push({ id: item.id, label: item.label || 'break', code: item.code });
         }
         return [];
     }
@@ -615,7 +601,7 @@ class FlowchartBuilder {
         const target = this.findJump(ctx, stmt.label && stmt.label.name, (j) => j.type === 'loop');
         if (!target) return frontier;
         for (const item of frontier) {
-            this.addEdge(item.id, target.continueTarget, item.label || 'continue');
+            this.addEdge(item.id, target.continueTarget, item.label || 'continue', item.code);
         }
         return [];
     }
@@ -628,18 +614,19 @@ class FlowchartBuilder {
         this.pendingNested = [];
 
         const isFunction = unit.kind === 'function';
-        const startLabel = isFunction ? this.signature(unit.fn, unit.name) : (unit.kind === 'block' ? unit.name : 'Start');
         const startRange = isFunction
             ? { start: unit.rangeNode.start, end: unit.fn.body.start }
             : unit.rangeNode;
 
-        const startId = this.addNode('start', startLabel, startRange);
-        const endId = this.addNode('end', 'End', isFunction ? { start: unit.fn.end - 1, end: unit.fn.end } : undefined);
+        const startId = this.addNode('start', [], startRange, this.startMeta(unit));
+        const endId = this.addNode('end', [], isFunction ? { start: unit.fn.end - 1, end: unit.fn.end } : undefined);
+        unit.startId = startId;
+        unit.endId = endId;
         const ctx = { jumps: [], catchTarget: null, exitId: endId, unitName: unit.name };
 
         let out;
         if (isFunction && unit.fn.body.type !== 'BlockStatement') {
-            const id = this.addNode('return', truncate(`return ${collapse(this.src(unit.fn.body))}`, this.options.maxLabelLength), unit.fn.body);
+            const id = this.addNode('return', [`return ${this.src(unit.fn.body)}`], unit.fn.body);
             this.addEdge(startId, id);
             out = [{ id }];
         } else {
@@ -672,7 +659,7 @@ class FlowchartBuilder {
         const nested = this.pendingNested;
         const position = this.units.indexOf(unit) + 1;
         nested.forEach((n, i) => {
-            this.units.splice(position + i, 0, { kind: 'function', name: n.name, fn: n.fn, rangeNode: n.fn });
+            this.units.splice(position + i, 0, { kind: 'function', name: n.name, fn: n.fn, rangeNode: n.fn, context: { fnKind: 'function' } });
         });
     }
 
@@ -704,63 +691,26 @@ class FlowchartBuilder {
         }
     }
 
-    /* ---------- Mermaid output ---------- */
+    /* ---------- output ---------- */
 
-    nodeLine(node) {
-        const [open, close] = SHAPES[node.kind] || SHAPES.process;
-        const label = node.lines.map(escapeLabel).join('<br/>');
-        return `${node.id}${open}"${label}"${close}`;
-    }
-
-    toMermaid() {
-        const lines = [`flowchart ${this.options.direction === 'LR' ? 'LR' : 'TD'}`];
-        const grouped = this.units.length > 1;
-
-        this.units.forEach((unit, index) => {
-            const unitNodes = this.nodes.filter((n) => n.unit === index);
-            if (grouped) {
-                lines.push(`    subgraph sg${index}["${escapeLabel(unit.name)}"]`);
-                unitNodes.forEach((n) => lines.push(`        ${this.nodeLine(n)}`));
-                lines.push('    end');
-            } else {
-                unitNodes.forEach((n) => lines.push(`    ${this.nodeLine(n)}`));
-            }
-        });
-
-        if (grouped) {
-            // Invisible links stack the subgraphs vertically instead of side by side.
-            for (let i = 1; i < this.units.length; i++) {
-                lines.push(`    sg${i - 1} ~~~ sg${i}`);
-            }
-        }
-
-        for (const edge of this.edges) {
-            const from = this.nodeById.get(edge.from);
-            const arrow = from && from.unreachable ? '-.->' : '-->';
-            const label = edge.label ? `|"${escapeEdgeLabel(edge.label)}"|` : '';
-            lines.push(`    ${edge.from} ${arrow}${label} ${edge.to}`);
-        }
-
-        const byClass = new Map();
-        const addClass = (cls, id) => {
-            if (!byClass.has(cls)) byClass.set(cls, []);
-            byClass.get(cls).push(id);
+    /** @returns {import('./graph').Graph} */
+    toGraph() {
+        return {
+            version: GRAPH_VERSION,
+            direction: this.options.direction === 'LR' ? 'LR' : 'TD',
+            units: this.units.map((u) => ({ name: u.name, kind: u.kind, startId: u.startId, endId: u.endId })),
+            nodes: this.nodes.map((n) => {
+                const node = { id: n.id, kind: n.kind, unit: n.unit, code: n.code, meta: n.meta };
+                if (n.unreachable) node.unreachable = true;
+                if (n.async) node.async = true;
+                if (n.start !== undefined) {
+                    node.start = n.start;
+                    node.end = n.end;
+                }
+                return node;
+            }),
+            edges: this.edges.map((e) => ({ ...e }))
         };
-        for (const node of this.nodes) {
-            if (node.unreachable) {
-                addClass('cfUnreachable', node.id);
-                continue;
-            }
-            if (CLASS_BY_KIND[node.kind]) addClass(CLASS_BY_KIND[node.kind], node.id);
-            if (node.async) addClass('cfAsync', node.id);
-        }
-
-        lines.push('');
-        CLASS_DEFS.forEach((def) => lines.push(`    ${def}`));
-        for (const [cls, ids] of byClass) {
-            lines.push(`    class ${ids.join(',')} ${cls}`);
-        }
-        return `${lines.join('\n')}\n`;
     }
 
     result() {
@@ -787,8 +737,10 @@ class FlowchartBuilder {
         } else {
             title = named.slice(0, 2).join(', ') + (units.length > 2 ? ` +${units.length - 2}` : '');
         }
+        const graph = this.toGraph();
         return {
-            mermaid: this.toMermaid(),
+            graph,
+            mermaid: toMermaid(graph, { maxLabelLength: this.options.maxLabelLength }),
             title,
             units,
             complexity: Math.max(...units.map((u) => u.complexity)),
@@ -827,4 +779,4 @@ function stripUndefined(object) {
     return Object.fromEntries(Object.entries(object).filter(([, v]) => v !== undefined));
 }
 
-module.exports = { buildFlowchart, computeComplexity, escapeLabel, FlowchartParseError, DEFAULT_OPTIONS };
+module.exports = { buildFlowchart, computeComplexity, FlowchartParseError, DEFAULT_OPTIONS };

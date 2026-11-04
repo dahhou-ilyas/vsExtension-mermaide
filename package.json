@@ -1,8 +1,8 @@
 {
   "name": "flowchartgenerator",
   "displayName": "Flowchart Generator",
-  "description": "Turn JavaScript and TypeScript functions into interactive flowcharts. Click any node to jump to its source, export to SVG, PNG or Markdown.",
-  "version": "2.0.0",
+  "description": "Turn JavaScript and TypeScript into interactive flowcharts, and flowcharts back into code. Edit the chart, see the code update live, apply it to your source.",
+  "version": "2.1.0",
   "publisher": "GeneratedFlowChart",
   "author": {
     "name": "Ilyas Dahhou"
@@ -38,7 +38,10 @@
     "javascript",
     "typescript",
     "react",
-    "complexity"
+    "complexity",
+    "code generation",
+    "flowchart to code",
+    "visual programming"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
@@ -76,6 +79,17 @@
         "command": "flowchartGenerator.clearHistory",
         "title": "Clear Flowchart History",
         "category": "Flowchart"
+      },
+      {
+        "command": "flowchartGenerator.newFlowchart",
+        "title": "New Flowchart (Design → Code)",
+        "category": "Flowchart",
+        "icon": "$(add)"
+      },
+      {
+        "command": "flowchartGenerator.codeFromMermaid",
+        "title": "Generate Code from Mermaid Flowchart",
+        "category": "Flowchart"
       }
     ],
     "menus": {
@@ -84,6 +98,11 @@
           "command": "flowchartGenerator.generate",
           "when": "editorLangId =~ /^(javascript|javascriptreact|typescript|typescriptreact)$/",
           "group": "navigation@90"
+        },
+        {
+          "command": "flowchartGenerator.codeFromMermaid",
+          "when": "editorLangId =~ /^(markdown|mermaid)$/ || resourceExtname =~ /^\\.(mmd|mermaid)$/",
+          "group": "navigation@91"
         }
       ],
       "editor/title": [
@@ -101,6 +120,10 @@
         {
           "command": "flowchartGenerator.generateFile",
           "when": "editorLangId =~ /^(javascript|javascriptreact|typescript|typescriptreact)$/"
+        },
+        {
+          "command": "flowchartGenerator.codeFromMermaid",
+          "when": "editorIsOpen"
         }
       ]
     },

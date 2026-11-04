@@ -22,3 +22,6 @@ export const FlowIcon = () => (
     <Icon><rect x="5" y="1.5" width="6" height="3.5" rx="1" /><path d="M8 5v2.5M8 7.5 4 9.5M8 7.5l4 2" /><rect x="1.5" y="10" width="5" height="3.5" rx="1" /><rect x="9.5" y="10" width="5" height="3.5" rx="1" /></Icon>
 );
 export const InfoIcon = () => <Icon><circle cx="8" cy="8" r="6.5" /><path d="M8 7.2V11.5M8 4.8v.2" /></Icon>;
+export const EditIcon = () => <Icon><path d="M11 2.5l2.5 2.5L6 12.5H3.5V10z" /><path d="M9.5 4l2.5 2.5" /></Icon>;
+export const UndoIcon = () => <Icon><path d="M5.5 3 2.5 6l3 3" /><path d="M2.5 6H10a3.5 3.5 0 0 1 0 7H7" /></Icon>;
+export const RedoIcon = () => <Icon><path d="M10.5 3l3 3-3 3" /><path d="M13.5 6H6a3.5 3.5 0 0 0 0 7h3" /></Icon>;
