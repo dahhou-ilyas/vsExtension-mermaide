@@ -25,7 +25,8 @@ src/
   core/                  Pure JavaScript, no VS Code API (unit tested in Node)
     parse.js             Babel parsing of full files and partial selections
     flowchartBuilder.js  AST → graph (the pivot model)
-    graph.js             Graph model, display labels, graph → Mermaid
+    graph.js             Graph model, display labels, graph → Mermaid (text export)
+    layout.js            Layout engine: layered layout + orthogonal routing (no dependency)
     codegen.js           Graph → structured code (with state-machine fallback)
     graphEdit.js         Pure editing operations used by the visual editor
     mermaidImport.js     Mermaid flowchart text → graph
@@ -39,6 +40,8 @@ src/
   codeActions.js         Save / apply to source (diff) / open / insert generated code
   codeLensProvider.js    "Flowchart" CodeLens
 webview/                 React UI, bundled into dist/webview.js
+  engine/                Native renderer: FlowCanvas (SVG, pan/zoom, minimap, tooltip),
+                         geometry (shapes, PCB traces), palette (styles), measure, syntax
 test/unit/               Mocha tests for src/core
 test/suite/              Integration tests run inside VS Code
 ```

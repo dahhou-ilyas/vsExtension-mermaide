@@ -8,7 +8,7 @@
  * so a graph edited with them can always be turned back into readable code.
  */
 
-const { cloneGraph, indexGraph, nextNodeId, markReachability } = require('./graph');
+const { cloneGraph, indexGraph, nextNodeId, markReachability, isNormalEdge, isEmbeddedUnit } = require('./graph');
 
 class GraphEditError extends Error {}
 
@@ -24,6 +24,55 @@ function findNode(graph, id) {
     const node = graph.nodes.find((n) => n.id === id);
     if (!node) throw new GraphEditError(`Unknown node ${id}.`);
     return node;
+}
+
+/** Nodes of inline callback flows mirror code embedded in another statement: they are read-only. */
+function assertEditable(graph, node) {
+    const unit = graph.units[node.unit];
+    if (isEmbeddedUnit(unit)) {
+        throw new GraphEditError(unit.kind === 'nested'
+            ? 'This node belongs to a nested function. Edit its definition in the parent flow instead.'
+            : 'This node belongs to an inline callback. Edit the statement that contains the callback instead.');
+    }
+}
+
+/**
+ * Removes units and renumbers `node.unit` accordingly.
+ * @param {import('./graph').Graph} graph
+ * @param {Set<number>} indices
+ */
+function removeUnits(graph, indices) {
+    if (!indices.size) return graph;
+    const removedNodes = new Set(graph.nodes.filter((n) => indices.has(n.unit)).map((n) => n.id));
+    const mapping = new Map();
+    let next = 0;
+    graph.units.forEach((_, i) => { if (!indices.has(i)) mapping.set(i, next++); });
+    graph.units = graph.units.filter((_, i) => !indices.has(i));
+    graph.nodes = graph.nodes.filter((n) => !removedNodes.has(n.id));
+    graph.nodes.forEach((n) => { n.unit = mapping.get(n.unit); });
+    graph.edges = graph.edges.filter((e) => !removedNodes.has(e.from) && !removedNodes.has(e.to));
+    return graph;
+}
+
+/**
+ * Removes the callback flows that hang off `nodeIds` (and their own nested
+ * callbacks): their code changed or disappeared with the statement.
+ */
+function dropCallbacksOf(graph, nodeIds) {
+    const doomed = new Set();
+    let frontier = new Set(nodeIds);
+    while (frontier.size) {
+        const nextFrontier = new Set();
+        for (const edge of graph.edges) {
+            if (edge.kind !== 'callback' || !frontier.has(edge.from)) continue;
+            const start = graph.nodes.find((n) => n.id === edge.to);
+            if (!start || doomed.has(start.unit)) continue;
+            doomed.add(start.unit);
+            graph.nodes.filter((n) => n.unit === start.unit).forEach((n) => nextFrontier.add(n.id));
+        }
+        frontier = nextFrontier;
+    }
+    return removeUnits(graph, doomed);
 }
 
 function addNode(graph, kind, unit, code, meta = {}) {
@@ -46,6 +95,16 @@ function prune(graph) {
     graph.units.forEach((u) => keep.add(u.endId));
     graph.nodes = graph.nodes.filter((n) => keep.has(n.id));
     graph.edges = graph.edges.filter((e) => keep.has(e.from) && keep.has(e.to));
+
+    // Callback flows whose statement was removed are orphans.
+    for (let changed = true; changed;) {
+        const orphans = new Set();
+        graph.units.forEach((unit, index) => {
+            if (isEmbeddedUnit(unit) && !graph.edges.some((e) => e.kind === 'callback' && e.to === unit.startId)) orphans.add(index);
+        });
+        changed = orphans.size > 0;
+        removeUnits(graph, orphans);
+    }
     return markReachability(graph);
 }
 
@@ -56,8 +115,9 @@ function prune(graph) {
  * @param {{ code?: string, header?: string, name?: string, params?: string }} changes
  */
 function updateNode(graph, id, changes) {
-    const next = cloneGraph(graph);
+    let next = cloneGraph(graph);
     const node = findNode(next, id);
+    assertEditable(next, node);
     node.meta = node.meta || {};
     switch (node.kind) {
         case 'start':
@@ -106,6 +166,9 @@ function updateNode(graph, id, changes) {
     node.async = node.code.some((c) => /\bawait\b/.test(c));
     delete node.start;
     delete node.end;
+    // The code changed: callbacks drawn from the old code are stale, and so are its exception edges.
+    next.edges = next.edges.filter((e) => !(e.from === id && e.kind === 'exception' && node.kind !== 'throw'));
+    next = dropCallbacksOf(next, [id]);
     return next;
 }
 
@@ -122,7 +185,9 @@ function insertOnEdge(graph, edgeIndex, kind) {
     const next = cloneGraph(graph);
     const edge = next.edges[edgeIndex];
     if (!edge) throw new GraphEditError('Unknown edge.');
+    if (!isNormalEdge(edge)) throw new GraphEditError('Steps can only be inserted on the normal flow (not on exception, finally or callback links).');
     const from = findNode(next, edge.from);
+    assertEditable(next, from);
     if (from.kind === 'return' || from.kind === 'throw') throw new GraphEditError('Nothing runs after a return or a throw.');
     const unit = from.unit;
     const target = edge.to;
@@ -163,10 +228,12 @@ function insertOnEdge(graph, edgeIndex, kind) {
  *  - loop: to the code after the loop (the body is removed).
  */
 function deleteNode(graph, id) {
-    const next = cloneGraph(graph);
+    let next = cloneGraph(graph);
     const node = findNode(next, id);
+    assertEditable(next, node);
+    next = dropCallbacksOf(next, [id]);
     const { out } = indexGraph(next);
-    const outgoing = out.get(id) || [];
+    const outgoing = (out.get(id) || []).filter(isNormalEdge);
     const unit = next.units[node.unit];
     let replacement;
 
@@ -202,7 +269,7 @@ function deleteNode(graph, id) {
     if (replacement === id) replacement = unit.endId;
 
     for (const edge of next.edges) {
-        if (edge.to === id && edge.from !== id) edge.to = replacement;
+        if (edge.to === id && edge.from !== id && isNormalEdge(edge)) edge.to = replacement;
     }
     next.edges = next.edges.filter((e) => e.from !== id && e.to !== id);
     next.nodes = next.nodes.filter((n) => n.id !== id);
@@ -241,7 +308,15 @@ function newGraph(options = {}) {
 function outgoingEdges(graph, id) {
     return graph.edges
         .map((edge, index) => ({ edge, index }))
-        .filter(({ edge }) => edge.from === id);
+        .filter(({ edge }) => edge.from === id && isNormalEdge(edge));
 }
 
-module.exports = { updateNode, insertOnEdge, deleteNode, newGraph, outgoingEdges, prune, GraphEditError, INSERTABLE };
+/** Whether a node can be edited in the visual editor. */
+function isEditable(graph, id) {
+    const node = graph.nodes.find((n) => n.id === id);
+    if (!node) return false;
+    const unit = graph.units[node.unit];
+    return !isEmbeddedUnit(unit);
+}
+
+module.exports = { updateNode, insertOnEdge, deleteNode, newGraph, outgoingEdges, prune, isEditable, removeUnits, GraphEditError, INSERTABLE };

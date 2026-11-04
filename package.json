@@ -1,8 +1,8 @@
 {
   "name": "flowchartgenerator",
   "displayName": "Flowchart Generator",
-  "description": "Turn JavaScript and TypeScript into interactive flowcharts, and flowcharts back into code. Edit the chart, see the code update live, apply it to your source.",
-  "version": "2.1.0",
+  "description": "Turn JavaScript and TypeScript into clear, interactive flowcharts — and flowcharts back into code. Own layout engine, classic flowchart symbols, live editing.",
+  "version": "3.0.0",
   "publisher": "GeneratedFlowChart",
   "author": {
     "name": "Ilyas Dahhou"
@@ -33,7 +33,6 @@
     "flowchart",
     "control flow",
     "diagram",
-    "mermaid",
     "visualization",
     "javascript",
     "typescript",
@@ -41,7 +40,9 @@
     "complexity",
     "code generation",
     "flowchart to code",
-    "visual programming"
+    "visual programming",
+    "mermaid export",
+    "cfg"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
@@ -151,31 +152,82 @@
           "default": "TD",
           "description": "Layout direction of generated flowcharts."
         },
-        "flowchartGenerator.theme": {
+        "flowchartGenerator.style": {
           "type": "string",
           "enum": [
-            "auto",
-            "default",
-            "dark",
-            "forest",
-            "neutral"
+            "classic",
+            "cyberpunk"
           ],
           "enumDescriptions": [
-            "Follow the active VS Code color theme",
-            "Mermaid light theme",
-            "Mermaid dark theme",
-            "Mermaid forest theme",
-            "Mermaid neutral (print friendly) theme"
+            "Classic flowchart symbols (ISO 5807), smooth curved arrows, colours that follow the VS Code light / dark theme",
+            "Neon panels, circuit-board traces and animated flow on a dark grid"
           ],
-          "default": "auto",
-          "description": "Color theme used to render flowcharts."
+          "default": "classic",
+          "description": "Visual style of the flowchart renderer."
+        },
+        "flowchartGenerator.animations": {
+          "type": "boolean",
+          "default": true,
+          "description": "Animate node appearance, layout changes while editing and (cyberpunk style) the flow along edges. Also disabled when the OS asks for reduced motion."
         },
         "flowchartGenerator.maxLabelLength": {
           "type": "number",
           "default": 60,
           "minimum": 10,
           "maximum": 300,
-          "description": "Maximum number of characters shown in a node before it is truncated."
+          "description": "Maximum characters per label when `flowchartGenerator.labels.mode` is `truncate`."
+        },
+        "flowchartGenerator.labels.mode": {
+          "type": "string",
+          "enum": [
+            "wrap",
+            "truncate"
+          ],
+          "enumDescriptions": [
+            "Wrap long code on several lines and fold nested brackets ({…}) when it is very long",
+            "Cut labels after `flowchartGenerator.maxLabelLength` characters"
+          ],
+          "default": "wrap",
+          "description": "How long code is displayed in nodes. The full code is always available in the node tooltip."
+        },
+        "flowchartGenerator.labels.lineWidth": {
+          "type": "number",
+          "default": 40,
+          "minimum": 15,
+          "maximum": 120,
+          "description": "Characters per line in node labels (wrap mode)."
+        },
+        "flowchartGenerator.labels.maxLines": {
+          "type": "number",
+          "default": 4,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "Maximum lines per statement in node labels (wrap mode)."
+        },
+        "flowchartGenerator.exceptions": {
+          "type": "string",
+          "enum": [
+            "detailed",
+            "summary"
+          ],
+          "enumDescriptions": [
+            "An edge from every statement of a try block that may throw (calls, new, await, throw) to its catch or finally",
+            "A single edge from try to catch"
+          ],
+          "default": "detailed",
+          "description": "How exceptional control flow is drawn."
+        },
+        "flowchartGenerator.callbacks.expand": {
+          "type": "boolean",
+          "default": true,
+          "description": "Draw inline callbacks (forEach, map, then, event handlers, IIFEs…) as their own flows, linked to the statement that contains them."
+        },
+        "flowchartGenerator.callbacks.maxDepth": {
+          "type": "number",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 10,
+          "description": "How many levels of nested callbacks are expanded."
         },
         "flowchartGenerator.mergeSequentialStatements": {
           "type": "boolean",
@@ -242,7 +294,6 @@
     "eslint": "^9.30.0",
     "eslint-plugin-react": "^7.37.5",
     "globals": "^16.3.0",
-    "mermaid": "^11.9.0",
     "mocha": "^11.7.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",

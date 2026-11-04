@@ -110,9 +110,11 @@ describe('buildFlowchart', () => {
             const catchNode = findNode(graph, 'catch (e)');
             const throwNode = findNode(graph, (n) => n.label.startsWith('throw'));
             const fin = findNode(graph, 'finally');
-            assert.ok(graph.edges.some((e) => e.from === tryNode.id && e.to === catchNode.id && e.label === 'error'));
+            const ok = findNode(graph, 'ok()');
+            assert.ok(graph.edges.some((e) => e.from === ok.id && e.to === catchNode.id && e.label === 'error'), 'ok() may throw');
+            assert.ok(!graph.edges.some((e) => e.from === tryNode.id && e.to === catchNode.id), 'no summary edge when precise edges exist');
             assert.ok(graph.edges.some((e) => e.from === throwNode.id && e.to === catchNode.id));
-            assert.strictEqual(graph.edges.filter((e) => e.to === fin.id).length, 2);
+            assert.strictEqual(graph.edges.filter((e) => e.to === fin.id && !e.dashed).length, 2, 'try and catch both flow into finally');
         });
 
         it('sends uncaught throws to the end node', () => {
@@ -131,15 +133,15 @@ describe('buildFlowchart', () => {
         it('merges sequential statements when enabled', () => {
             const code = 'function f() { a(); b(); c(); }';
             const merged = assertWellFormed(buildFlowchart(code).mermaid);
-            assert.ok([...merged.nodes.values()].some((n) => n.label === 'a()<br/>b()<br/>c()'));
+            assert.ok([...merged.nodes.values()].some((n) => n.label === 'a();<br/>b();<br/>c();'));
             const split = assertWellFormed(buildFlowchart(code, { mergeSequentialStatements: false }).mermaid);
             assert.ok(['a()', 'b()', 'c()'].every((label) => [...split.nodes.values()].some((n) => n.label === label)));
         });
 
         it('respects maxStatementsPerBlock', () => {
             const graph = assertWellFormed(buildFlowchart('function f() { a(); b(); c(); d(); }', { maxStatementsPerBlock: 2 }).mermaid);
-            assert.ok([...graph.nodes.values()].some((n) => n.label === 'a()<br/>b()'));
-            assert.ok([...graph.nodes.values()].some((n) => n.label === 'c()<br/>d()'));
+            assert.ok([...graph.nodes.values()].some((n) => n.label === 'a();<br/>b();'));
+            assert.ok([...graph.nodes.values()].some((n) => n.label === 'c();<br/>d();'));
         });
 
         it('uses the configured direction', () => {
@@ -228,7 +230,7 @@ describe('buildFlowchart', () => {
     describe('labels', () => {
         it('escapes characters that would break Mermaid', () => {
             const graph = assertWellFormed(buildFlowchart('function f() { log("a <b> & c => d"); }').mermaid);
-            findNode(graph, "log('a #lt;b#gt; #amp; c =#gt; d')");
+            findNode(graph, 'log(\u02BAa #lt;b#gt; #amp; c =#gt; d\u02BA)');
         });
 
         it('guards labels starting with a backtick', () => {
@@ -236,7 +238,7 @@ describe('buildFlowchart', () => {
         });
 
         it('truncates long labels', () => {
-            const result = buildFlowchart(`function f() { call(${'x, '.repeat(50)}y); }`, { maxLabelLength: 30 });
+            const result = buildFlowchart(`function f() { call(${'x, '.repeat(50)}y); }`, { labelMode: 'truncate', maxLabelLength: 30 });
             assert.match(result.mermaid, /…/);
         });
 

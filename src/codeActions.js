@@ -4,7 +4,7 @@ const vscode = require('vscode');
 const { generateCode } = require('./core/codegen');
 const { toMermaid } = require('./core/graph');
 const { MESSAGES } = require('./constants');
-const { getSettings } = require('./config');
+const { labelSettings } = require('./config');
 const { hash } = require('./flowchartService');
 
 const PREVIEW_SCHEME = 'flowchart-preview';
@@ -95,7 +95,7 @@ class CodeActions {
             graph,
             nodes,
             title: graph.units.length === 1 ? graph.units[0].name : diagram.title,
-            mermaid: toMermaid(graph, { maxLabelLength: getSettings().maxLabelLength }),
+            mermaid: toMermaid(graph, labelSettings()),
             edited: true
         });
     }

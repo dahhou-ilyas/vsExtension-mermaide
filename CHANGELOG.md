@@ -3,6 +3,49 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [3.0.0] - 2026-11-04
+
+### Added
+- **Own rendering engine** replacing Mermaid in the panel:
+  - a layered (Sugiyama) layout made for control flow: DFS cycle removal, longest-path layering, barycenter crossing reduction and exact overlap removal by isotonic regression;
+  - loops in a right gutter and exceptional flow in a left gutter (VEIL), with edges to the same target sharing one lane;
+  - callback / nested function flows laid out as a tree to the right of their parent;
+  - a straight main path (each node aligned on the child with the longest continuation, after Brandes & Köpf) and branches leaving conditions from their side vertices;
+  - SVG renderer with a **classic** style (default): ISO 5807 symbols, smooth curved arrows, short Yes / No labels, light / dark colours from the VS Code theme, faint secondary links highlighted on hover; and an optional **cyberpunk** style (neon panels, circuit-board traces, animated flow);
+  - animated zoom around the pointer, drag to pan, double-click to fit, minimap, focus mode on hover, tooltip with highlighted code, selection outline, cursor-sync highlight, gliding nodes and morphing arrows while editing;
+  - self-contained SVG / PNG export (colours resolved).
+- `flowchartGenerator.style` and `flowchartGenerator.animations` settings.
+- Layout tests that check invariants (no overlap, attached and orthogonal edges, nodes inside their frame) on hundreds of real-world functions.
+
+### Changed
+- The panel bundle went from 3.6 MB to 324 KB.
+- Mermaid is only used for text export (copy / Markdown); flowcharts saved by older versions are converted automatically.
+
+### Removed
+- `flowchartGenerator.theme` (Mermaid themes), replaced by `flowchartGenerator.style` (`classic` or `cyberpunk`).
+
+## [2.2.0] - 2026-11-04
+
+### Added
+- **Inline callbacks as their own flows**: callbacks passed to calls (`forEach`, `map`, `then`, `setTimeout`, …), JSX event handlers, `new Promise(…)` executors and IIFEs are drawn as separate flows linked to their statement, with nested callbacks up to `flowchartGenerator.callbacks.maxDepth`. Statements show the callback body folded (`=> {…}`).
+- **Nested function declarations** stay in their parent's code (a definition node) and their body is drawn as a linked flow.
+- **Precise exceptional flow**: an `error` edge from every statement of a `try` block that may throw to its `catch` (or `finally`). `return` / `throw` go through `finally`, and an explicit "end finally" node continues with `then return` / `rethrow`. A `flowchartGenerator.exceptions: summary` setting restores the single edge.
+- **Long labels are no longer cut**: they wrap on several lines, very long code folds nested brackets innermost first, every node has a tooltip with its full code, and a **full labels** toggle shows everything in the nodes. New `labels.mode`, `labels.lineWidth` and `labels.maxLines` settings.
+- Legend entries for exception, `finally` and callback edges.
+- Mermaid import understands subgraphs (one flow per function / callback), dashed exception / `finally` / callback edges, and rebuilds folded bodies from their linked flows.
+
+### Fixed
+Found by running the generator on 11,345 real-world functions:
+- `{ … }` blocks that only scope `let` / `const` were flattened, which redeclared variables.
+- `case` bodies declaring variables are wrapped in a block.
+- `switch` cases were sometimes regenerated in a different order.
+- Infinite loops left only through `return`, and loops with both `break` and `return`, fell back to a state machine.
+- Merge points located after an enclosing `case` / loop boundary produced unstructured code.
+- The end of a `finally` block containing conditions could not be found.
+- Anonymous function expressions were regenerated with an invalid name.
+- Multi-line statements were indented 4 extra spaces.
+- In labels: comments swallowed the rest of an expression, and double quotes and HTML entities in strings did not survive a Mermaid round trip.
+
 ## [2.1.0] - 2026-11-04
 
 ### Added

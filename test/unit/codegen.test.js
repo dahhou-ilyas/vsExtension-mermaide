@@ -246,6 +246,153 @@ const SAMPLES = {
         }`,
         inputs: [[['a', 'b', 'quit', 'c']], [['a']]]
     }
+,
+    // Patterns found by running the generator on 11,000+ real-world functions.
+    scopeBlocks: {
+        code: `function scopeBlocks(list) {
+            const out = [];
+            {
+                const items = list.filter((x) => x > 0);
+                out.push(items.length);
+            }
+            let items = list.length;
+            out.push(items);
+            return out.join(',');
+        }`,
+        inputs: [[[1, -2, 3]], [[]]]
+    },
+    caseBlocks: {
+        code: `function caseBlocks(kind) {
+            switch (kind) {
+                case 'a': {
+                    const value = 1;
+                    return value;
+                }
+                case 'b': {
+                    const value = 2;
+                    return value;
+                }
+                default:
+                    return 0;
+            }
+        }`,
+        inputs: [['a'], ['b'], ['c']]
+    },
+    caseLexicalNoBraces: {
+        code: `function caseLexicalNoBraces(kind) {
+            let r;
+            switch (kind) {
+                case 1:
+                    const raw = 'one';
+                    r = raw;
+                    break;
+                default:
+                    r = 'other';
+            }
+            return r;
+        }`,
+        inputs: [[1], [2]]
+    },
+    nestedFunctions: {
+        code: `function nestedFunctions(n) {
+            if (n < 0) return helper(-n);
+            return helper(n) + twice(n);
+            function helper(x) { return x * 10; }
+            function twice(x) { return x * 2; }
+        }`,
+        inputs: [[3], [-2]]
+    },
+    loopReturnsOnly: {
+        code: `function loopReturnsOnly(path) {
+            let node = { next: { next: { value: 7 } } };
+            for (let i = 0; ; i++) {
+                if (i === path) return node.value ?? i;
+                if (!node.next) return -1;
+                node = node.next;
+            }
+        }`,
+        inputs: [[0], [2], [5]]
+    },
+    loopBreakAndReturn: {
+        code: `function loopBreakAndReturn(start) {
+            for (let node = start; ; ) {
+                const parent = node.parent;
+                if (!parent) {
+                    break;
+                }
+                if (parent.type === 'T' && node.id === parent.childId) {
+                    return true;
+                }
+                node = parent;
+            }
+            return false;
+        }`,
+        inputs: [[{ parent: null }], [{ id: 2, parent: { type: 'T', childId: 2, parent: null } }], [{ id: 2, parent: { type: 'U', parent: null } }]]
+    },
+    breakInsideCaseThenFallThrough: {
+        code: `function breakInsideCaseThenFallThrough(mode, same) {
+            const log = [];
+            switch (mode) {
+                case 0:
+                    log.push('init');
+                    break;
+                case 1:
+                    if (same) {
+                        log.push('same');
+                        break;
+                    }
+                    log.push('upgrade');
+                default:
+                    log.push('map');
+            }
+            return log.join(',');
+        }`,
+        inputs: [[0, false], [1, true], [1, false], [2, false]]
+    },
+    emptyCaseBreakInLoop: {
+        code: `function emptyCaseBreakInLoop(types) {
+            let i = 0;
+            let seen = 0;
+            while (i < types.length) {
+                switch (types[i]) {
+                    case 'skip':
+                        break;
+                    case 'count':
+                        if (seen > 1) {
+                            return 'many';
+                        }
+                        seen++;
+                        break;
+                    default:
+                        return 'stop at ' + i;
+                }
+                i++;
+            }
+            return 'seen ' + seen;
+        }`,
+        inputs: [[['skip', 'count', 'skip']], [['count', 'count', 'count']], [['skip', 'x']]]
+    },
+    finallyWithBranches: {
+        code: `function finallyWithBranches(fail, verbose) {
+            const log = [];
+            const run = () => { if (fail) throw new Error('boom'); return 'ok'; };
+            try {
+                return run();
+            } catch (e) {
+                log.push(e.message);
+            } finally {
+                log.push('cleanup');
+                if (verbose) {
+                    log.push('verbose');
+                }
+                if (log.length > 5) {
+                    log.length = 0;
+                }
+            }
+            return log.join(',');
+        }`,
+        inputs: [[false, true], [true, true], [true, false]]
+    }
 };
 
 describe('generateCode (round trip: code → flowchart → code)', () => {

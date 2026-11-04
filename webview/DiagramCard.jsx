@@ -1,13 +1,13 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { toMermaid } from '../src/core/graph';
+import { fullText } from '../src/core/graph';
 import { Inspector, CodePreview, useGraphHistory } from './FlowEditor';
-import MermaidDiagram, { clampZoom } from './MermaidDiagram';
+import FlowCanvas, { clampZoom } from './engine/FlowCanvas';
 import { MetricStrip, Insights, UnitTable } from './DiagramDetails';
 import { post } from './vscodeApi';
-import { toSvgMarkup, toPngDataUrl, editorBackground } from './exporter';
+import { toPngDataUrl } from './exporter';
 import {
     ZoomInIcon, ZoomOutIcon, FitIcon, CopyIcon, MarkdownIcon, DownloadIcon, TrashIcon, RefreshIcon, CodeIcon, InfoIcon,
-    EditIcon, UndoIcon, RedoIcon
+    EditIcon, UndoIcon, RedoIcon, ExpandIcon
 } from './icons';
 
 function complexityLevel(value) {
@@ -68,13 +68,14 @@ function EditorBar({ diagram, history, onClose }) {
 }
 
 export default function DiagramCard({
-    diagram, theme, focused, focusTick, zoom, onZoomChange, highlightNodeId, detailsOpen, onToggleDetails, startEditing, maxLabelLength
+    diagram, theme, focused, focusTick, zoom, onZoomChange, highlightNodeId, detailsOpen, onToggleDetails, startEditing, labels, animate
 }) {
-    const svgRef = useRef(null);
+    const canvasRef = useRef(null);
     const cardRef = useRef(null);
     const [exportOpen, setExportOpen] = useState(false);
     const [editing, setEditing] = useState(!!startEditing && !!diagram.graph);
     const [selectedId, setSelectedId] = useState(undefined);
+    const [fullLabels, setFullLabels] = useState(false);
     const history = useGraphHistory(diagram.graph);
     const complexity = complexityLevel(diagram.complexity);
     const attached = !!diagram.uri;
@@ -103,10 +104,19 @@ export default function DiagramCard({
         return () => window.removeEventListener('keydown', onKey);
     });
 
-    const editMermaid = useMemo(
-        () => (editing && history.graph ? toMermaid(history.graph, { maxLabelLength: maxLabelLength || 60, selectedId }) : null),
-        [editing, history.graph, selectedId, maxLabelLength]
+    const labelOptions = useMemo(
+        () => ({ ...(labels || {}), ...(fullLabels ? { labelMode: 'wrap', maxLines: 60 } : {}) }),
+        [labels, fullLabels]
     );
+    const shownGraph = editing ? history.graph : diagram.graph;
+    const nodeTexts = useMemo(() => {
+        const texts = {};
+        for (const node of (shownGraph && shownGraph.nodes) || []) {
+            const text = fullText(node);
+            if (text && node.kind !== 'end') texts[node.id] = text.length > 1500 ? `${text.slice(0, 1500)}…` : text;
+        }
+        return texts;
+    }, [shownGraph]);
 
     const closeEditor = () => {
         history.reset(diagram.graph);
@@ -125,16 +135,15 @@ export default function DiagramCard({
 
     const exportAs = async (format) => {
         setExportOpen(false);
-        const svg = svgRef.current;
-        if (!svg) return;
+        const exported = canvasRef.current && canvasRef.current.toSvg();
+        if (!exported) return;
         try {
-            const markup = toSvgMarkup(svg, editorBackground());
+            const { markup, width, height } = exported;
             if (format === 'svg') {
                 post('export', { id: diagram.id, format, data: markup });
                 return;
             }
-            const box = svg.viewBox.baseVal;
-            const data = await toPngDataUrl(markup, box.width, box.height, 2);
+            const data = await toPngDataUrl(markup, width, height, 2);
             post('export', { id: diagram.id, format, data });
         } catch (error) {
             post('error', { message: `Export failed: ${error && error.message ? error.message : error}` });
@@ -186,6 +195,10 @@ export default function DiagramCard({
                     </button>
                     <ToolButton label="Zoom in" onClick={() => setZoom(clampZoom(currentZoom * 1.25))}><ZoomInIcon /></ToolButton>
                     <ToolButton label="Fit to width" onClick={() => setZoom('fit')}><FitIcon /></ToolButton>
+                    {diagram.graph ? (
+                        <ToolButton label={fullLabels ? 'Compact labels' : 'Show the full code in every node'} active={fullLabels}
+                            onClick={() => setFullLabels((v) => !v)}><ExpandIcon /></ToolButton>
+                    ) : null}
                     <span className="fc-separator" />
                     {diagram.graph ? (
                         <ToolButton label={editing ? 'Close the editor' : 'Edit the chart and generate code'} active={editing}
@@ -193,7 +206,7 @@ export default function DiagramCard({
                     ) : null}
                     <ToolButton label={detailsOpen ? 'Hide details' : 'Show details & insights'} active={detailsOpen} onClick={() => onToggleDetails(diagram.id, !detailsOpen)}><InfoIcon /></ToolButton>
                     {attached ? <ToolButton label="Regenerate from current source" onClick={() => post('regenerate', { id: diagram.id })}><RefreshIcon /></ToolButton> : null}
-                    <ToolButton label="Copy Mermaid definition" onClick={() => post('copy', { text: diagram.mermaid })}><CopyIcon /></ToolButton>
+                    <ToolButton label="Copy as Mermaid (for docs)" onClick={() => post('copy', { text: diagram.mermaid })}><CopyIcon /></ToolButton>
                     <ToolButton label="Open as Markdown" onClick={() => post('openMarkdown', { id: diagram.id })}><MarkdownIcon /></ToolButton>
                     <div className="fc-menu-anchor">
                         <ToolButton label="Export image" onClick={() => setExportOpen((open) => !open)}><DownloadIcon /></ToolButton>
@@ -217,20 +230,26 @@ export default function DiagramCard({
             ) : null}
             {editing ? <EditorBar diagram={diagram} history={history} onClose={closeEditor} /> : null}
             <div className={editing ? 'fc-edit-layout' : undefined}>
-                <MermaidDiagram
-                    code={editing ? editMermaid : diagram.mermaid}
-                    theme={theme}
-                    zoom={zoom === undefined ? 'fit' : zoom}
-                    onZoom={setZoom}
-                    svgRef={svgRef}
-                    nodeLines={editing ? {} : nodeLines}
-                    highlightNodeId={editing ? undefined : highlightNodeId}
-                    tooltip={editing ? 'Click to select and edit' : undefined}
-                    onNodeClick={(nodeId) => {
-                        if (editing) setSelectedId(nodeId === selectedId ? undefined : nodeId);
-                        else if (attached) post('reveal', { id: diagram.id, nodeId });
-                    }}
-                />
+                {shownGraph ? (
+                    <FlowCanvas
+                        ref={canvasRef}
+                        graph={shownGraph}
+                        labels={labelOptions}
+                        theme={theme}
+                        animate={animate}
+                        zoom={zoom === undefined ? 'fit' : zoom}
+                        onZoom={setZoom}
+                        nodeLines={editing ? {} : nodeLines}
+                        nodeTexts={nodeTexts}
+                        selectedId={editing ? selectedId : undefined}
+                        highlightId={editing ? undefined : highlightNodeId}
+                        tooltipHint={editing ? 'Click to select and edit' : (attached ? 'Click to open in the editor' : undefined)}
+                        onNodeClick={(nodeId) => {
+                            if (editing) setSelectedId(nodeId === selectedId ? undefined : nodeId);
+                            else if (attached) post('reveal', { id: diagram.id, nodeId });
+                        }}
+                    />
+                ) : <div className="fc-loading">Regenerate this flowchart to display it.</div>}
                 {editing ? (
                     <aside className="fc-edit-side">
                         <Inspector graph={history.graph} selectedId={selectedId} onChange={history.push} onSelect={setSelectedId} />

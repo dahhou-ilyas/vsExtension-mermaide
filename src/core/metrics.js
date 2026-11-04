@@ -88,7 +88,7 @@ function logicalOperands(node, out = []) {
  * @param {number} unit.cyclomatic Cyclomatic complexity computed by the builder
  * @returns {{ metrics: UnitMetrics, insights: Insight[] }}
  */
-function analyzeUnit({ body, params = [], name, source, cyclomatic }) {
+function analyzeUnit({ body, params = [], name, source, cyclomatic, lambdaInsights = true }) {
     const metrics = {
         cyclomatic,
         cognitive: 0,
@@ -103,7 +103,10 @@ function analyzeUnit({ body, params = [], name, source, cyclomatic }) {
         calls: 0
     };
     /** @type {Insight[]} */
-    const insights = [];
+    const collected = [];
+    let lambdaDepth = 0;
+    // Insights found inside lambdas are reported by the lambda's own flow when callbacks are expanded.
+    const insights = { push: (insight) => { if (lambdaInsights || lambdaDepth === 0) collected.push(insight); } };
     const once = new Set();
     const shortName = name ? String(name).split(/[.›\s]+/).pop() : undefined;
 
@@ -238,7 +241,9 @@ function analyzeUnit({ body, params = [], name, source, cyclomatic }) {
 
         if (FUNCTION_TYPES.has(node.type)) {
             // Lambdas / nested function expressions increase nesting (they are not loops).
+            lambdaDepth++;
             visit(node.body, nesting + 1, false);
+            lambdaDepth--;
             return;
         }
 
@@ -300,7 +305,7 @@ function analyzeUnit({ body, params = [], name, source, cyclomatic }) {
         });
     }
 
-    return { metrics, insights };
+    return { metrics, insights: collected };
 }
 
 module.exports = { analyzeUnit, THRESHOLDS };

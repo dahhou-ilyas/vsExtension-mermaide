@@ -8,7 +8,13 @@ const { GRAPH_VERSION, collapse, toMermaid } = require('./graph');
  * @typedef {Object} BuildOptions
  * @property {string} [language]                  VS Code language id (javascript, typescriptreact, ...)
  * @property {'TD' | 'LR'} [direction]            Diagram layout direction
- * @property {number} [maxLabelLength]            Truncate node labels after this many characters
+ * @property {'wrap' | 'truncate'} [labelMode]   How long labels are shortened for display
+ * @property {number} [lineWidth]                 Characters per line (wrap mode)
+ * @property {number} [maxLines]                  Lines per statement (wrap mode)
+ * @property {number} [maxLabelLength]            Characters per label (truncate mode)
+ * @property {'detailed' | 'summary'} [exceptionEdges] detailed: an edge from every statement that may throw to its handler
+ * @property {boolean} [expandCallbacks]          Draw inline callbacks (forEach, then, onClick, ...) as their own flows
+ * @property {number} [maxCallbackDepth]          How deep nested callbacks are expanded
  * @property {boolean} [mergeSequentialStatements] Group consecutive simple statements into one block
  * @property {number} [maxStatementsPerBlock]     Max statements per merged block
  * @property {boolean} [preferClassMember]        Try parsing the code as class members first
@@ -37,7 +43,13 @@ const { GRAPH_VERSION, collapse, toMermaid } = require('./graph');
 const DEFAULT_OPTIONS = {
     language: 'javascript',
     direction: 'TD',
+    labelMode: 'wrap',
+    lineWidth: 40,
+    maxLines: 4,
     maxLabelLength: 60,
+    exceptionEdges: 'detailed',
+    expandCallbacks: true,
+    maxCallbackDepth: 3,
     mergeSequentialStatements: true,
     maxStatementsPerBlock: 4,
     preferClassMember: false,
@@ -82,6 +94,59 @@ function isAlwaysTruthy(test) {
     if (test.type === 'BooleanLiteral') return test.value === true;
     if (test.type === 'NumericLiteral') return test.value !== 0;
     return false;
+}
+
+/** Visits every AST node below `root`, without entering nested functions. */
+function walkShallow(root, visit) {
+    const stack = [root];
+    while (stack.length) {
+        const node = stack.pop();
+        if (!node || typeof node.type !== 'string') continue;
+        if (node !== root && isFunctionNode(node)) {
+            visit(node, true);
+            continue;
+        }
+        if (visit(node, false) === false) continue;
+        for (const key of Object.keys(node)) {
+            if (key === 'loc' || key === 'extra' || key.endsWith('Comments')) continue;
+            const value = node[key];
+            if (Array.isArray(value)) {
+                for (let i = value.length - 1; i >= 0; i--) if (value[i] && typeof value[i].type === 'string') stack.push(value[i]);
+            } else if (value && typeof value.type === 'string') {
+                stack.push(value);
+            }
+        }
+    }
+}
+
+const THROWING_TYPES = new Set([
+    'CallExpression', 'OptionalCallExpression', 'NewExpression', 'AwaitExpression',
+    'YieldExpression', 'TaggedTemplateExpression', 'ThrowStatement', 'ImportExpression'
+]);
+
+/**
+ * Whether evaluating `node` may raise an exception that a surrounding `catch`
+ * would see. Like Soot's ExceptionalUnitGraph, only instructions that can throw
+ * get an edge to the handler: calls, `new`, `await`, `yield`, tagged templates
+ * and `throw`. Code inside nested functions does not run here and is ignored.
+ */
+function mayThrow(node) {
+    let found = false;
+    walkShallow(node, (n, isFunction) => {
+        if (found || isFunction) return false;
+        if (THROWING_TYPES.has(n.type)) {
+            found = true;
+            return false;
+        }
+        return true;
+    });
+    return found;
+}
+
+/** Whether a block declares block-scoped names (let / const / class / function). */
+function declaresInBlock(block) {
+    return block.body.some((s) => (s.type === 'VariableDeclaration' && s.kind !== 'var')
+        || s.type === 'ClassDeclaration' || s.type === 'FunctionDeclaration');
 }
 
 /** Cyclomatic complexity of a function body (nested functions excluded). */
@@ -150,6 +215,13 @@ class FlowchartBuilder {
         this.units = [];
         this.unreachable = false;
         this.unitIndex = -1;
+        this.pendingNested = [];
+        this.pendingCallbacks = [];
+        this.pendingExits = [];
+        this.scopeStack = [];
+        this.scopeCounter = 0;
+        /** @type {Map<string, number>} */
+        this.callbackNames = new Map();
     }
 
     /* ---------- source helpers ---------- */
@@ -181,6 +253,7 @@ class FlowchartBuilder {
             end: astNode ? this.rel(astNode.end) : undefined,
             unit: this.unitIndex,
             unreachable: this.unreachable,
+            ...(this.scopeStack.length ? { scope: [...this.scopeStack] } : {}),
             mergeable: kind === 'process',
             async: false
         };
@@ -189,10 +262,159 @@ class FlowchartBuilder {
         return id;
     }
 
-    addEdge(from, to, label = '', code = undefined) {
+    addEdge(from, to, label = '', code = undefined, kind = undefined) {
         const edge = { from, to, label };
         if (code !== undefined) edge.code = code;
+        if (kind) edge.kind = kind;
         this.edges.push(edge);
+        return edge;
+    }
+
+    /* ---------- exceptions ---------- */
+
+    /** Innermost handler that receives an exception: a catch, or a finally that runs before propagating. */
+    exceptionTarget(ctx) {
+        const handler = ctx.handlers[ctx.handlers.length - 1];
+        if (!handler) return null;
+        if (handler.catchId) return { id: handler.catchId, handler, viaFinally: false };
+        return { id: handler.finallyId, handler, viaFinally: true };
+    }
+
+    /**
+     * Adds an exception edge from `nodeId` to the innermost handler when the
+     * code of `astNode` may throw (detailed mode only).
+     */
+    linkException(nodeId, astNode, ctx) {
+        if (this.options.exceptionEdges !== 'detailed' || !astNode || !ctx || !ctx.handlers.length) return;
+        if (!mayThrow(astNode)) return;
+        const target = this.exceptionTarget(ctx);
+        if (!target) return;
+        if (this.edges.some((e) => e.from === nodeId && e.to === target.id && e.kind === 'exception')) return;
+        this.addEdge(nodeId, target.id, 'error', undefined, 'exception');
+        target.handler.detailed = true;
+        if (target.viaFinally) target.handler.abrupt.add('throw');
+    }
+
+    /* ---------- callbacks ---------- */
+
+    /** Readable name of a callee, with nested call arguments folded: `fetch(…).then`. */
+    calleeLabel(callee) {
+        if (!callee) return 'callback';
+        switch (callee.type) {
+            case 'Identifier':
+            case 'ThisExpression':
+            case 'Super':
+                return this.src(callee);
+            case 'MemberExpression':
+            case 'OptionalMemberExpression': {
+                const object = this.calleeLabel(callee.object);
+                const property = callee.computed ? `[${collapse(this.src(callee.property))}]` : `.${this.src(callee.property)}`;
+                return `${object}${callee.optional ? '?' : ''}${property}`;
+            }
+            case 'CallExpression':
+            case 'OptionalCallExpression':
+            case 'NewExpression':
+                return `${callee.type === 'NewExpression' ? 'new ' : ''}${this.calleeLabel(callee.callee)}(…)`;
+            default:
+                return collapse(this.src(callee)).slice(0, 30);
+        }
+    }
+
+    /** Whether a callback is worth its own flow (it has some control flow or several statements). */
+    isInterestingCallback(fn) {
+        if (fn.body.type === 'BlockStatement') return fn.body.body.length > 0;
+        let interesting = false;
+        walkShallow(fn.body, (n, isFunction) => {
+            if (isFunction) return false;
+            if (n.type === 'ConditionalExpression' || n.type === 'LogicalExpression') interesting = true;
+            return !interesting;
+        });
+        return interesting;
+    }
+
+    /**
+     * Finds inline callbacks in the code of a node (`items.forEach(x => {…})`,
+     * `promise.then(…)`, `onClick={() => {…}}`, IIFEs) and schedules them as
+     * their own flows, linked to the node with a "callback" edge.
+     */
+    collectCallbacks(nodeId, astNode, ctx) {
+        if (!this.options.expandCallbacks || !astNode || typeof astNode.type !== 'string') return;
+        if ((ctx.callbackDepth || 0) >= this.options.maxCallbackDepth) return;
+        const parents = new Map();
+        walkShallow(astNode, (n, isFunction) => {
+            if (isFunction) return false;
+            for (const key of Object.keys(n)) {
+                const value = n[key];
+                const children = Array.isArray(value) ? value : [value];
+                for (const child of children) if (child && typeof child.type === 'string') parents.set(child, n);
+            }
+            return true;
+        });
+        const found = [];
+        for (const [child, parent] of parents) {
+            if (child.type !== 'ArrowFunctionExpression' && child.type !== 'FunctionExpression') continue;
+            if (!this.isInterestingCallback(child)) continue;
+            let callee;
+            let jsxAttribute = false;
+            if ((parent.type === 'CallExpression' || parent.type === 'OptionalCallExpression' || parent.type === 'NewExpression')) {
+                if (parent.callee === child) callee = 'IIFE';
+                else if (parent.arguments.includes(child)) callee = this.calleeLabel(parent.type === 'NewExpression' ? { type: 'NewExpression', callee: parent.callee } : parent.callee).replace(/\(…\)$/, '');
+            } else if (parent.type === 'JSXExpressionContainer') {
+                const attribute = parents.get(parent);
+                if (attribute && attribute.type === 'JSXAttribute') {
+                    callee = this.src(attribute.name);
+                    jsxAttribute = true;
+                }
+            }
+            if (!callee) continue;
+            if (parent.type === 'NewExpression') callee = `new ${this.calleeLabel(parent.callee)}`;
+            found.push({ fn: child, callee, jsxAttribute });
+        }
+        found.sort((a, b) => a.fn.start - b.fn.start);
+        for (const item of found) {
+            const base = `${ctx.unitName} › ${item.callee}`;
+            const count = (this.callbackNames.get(base) || 0) + 1;
+            this.callbackNames.set(base, count);
+            this.pendingCallbacks.push({
+                ...item,
+                sourceNodeId: nodeId,
+                name: count > 1 ? `${base} #${count}` : base,
+                depth: (ctx.callbackDepth || 0) + 1
+            });
+            this.addFold(nodeId, astNode, item.fn);
+        }
+    }
+
+    /**
+     * Records the body of a function drawn as its own flow, relative to the
+     * code of the node, so labels show it folded (`=> {…}`).
+     */
+    addFold(nodeId, astNode, fn) {
+        const node = this.nodeById.get(nodeId);
+        if (!node || fn.body.type !== 'BlockStatement' || node.code.length !== 1) return;
+        const base = astNode.start;
+        if (fn.body.start < base || fn.body.end > astNode.end) return;
+        node.meta.folds = [...(node.meta.folds || []), [fn.body.start - base, fn.body.end - base]];
+    }
+
+    /** Whether a statement contains a callback that will be drawn as its own flow. */
+    hasCallback(stmt) {
+        let found = false;
+        walkShallow(stmt, (n, isFunction) => {
+            if (found) return false;
+            if (isFunction) {
+                if ((n.type === 'ArrowFunctionExpression' || n.type === 'FunctionExpression') && this.isInterestingCallback(n)) found = true;
+                return false;
+            }
+            return true;
+        });
+        return found;
+    }
+
+    /** Exceptions and callbacks of the code represented by a node. */
+    annotate(nodeId, astNode, ctx) {
+        this.linkException(nodeId, astNode, ctx);
+        this.collectCallbacks(nodeId, astNode, ctx);
     }
 
     connect(frontier, to) {
@@ -241,7 +463,10 @@ class FlowchartBuilder {
         }
         return {
             fnKind,
+            callee: context.callee,
+            jsxAttribute: context.jsxAttribute || undefined,
             name: context.shortName || this.functionName(fn),
+            ownName: !!(fn.id && fn.id.name),
             displayName: unit.name,
             params,
             async: !!fn.async,
@@ -380,12 +605,31 @@ class FlowchartBuilder {
         const savedUnreachable = this.unreachable;
         for (const stmt of statements) {
             if (stmt.type === 'FunctionDeclaration') {
-                // Hoisted: rendered as its own flow, never "unreachable".
-                this.pendingNested.push({ fn: stmt, name: `${ctx.unitName} › ${this.functionName(stmt)}` });
+                // The declaration stays in the parent's code (a definition node); its body is drawn
+                // as its own flow. Declarations are hoisted, so they are never "unreachable".
+                const savedFlag = this.unreachable;
+                this.unreachable = false;
+                const id = this.addNode('process', [this.src(stmt)], stmt, {
+                    declaration: this.functionName(stmt),
+                    hoisted: frontier.length === 0,
+                    folds: [[stmt.body.start - stmt.start, stmt.body.end - stmt.start]]
+                });
+                this.unreachable = savedFlag;
+                this.seal([{ id }]);
+                if (frontier.length) frontier = this.seal(this.connect(frontier, id));
+                this.pendingNested.push({ fn: stmt, name: `${ctx.unitName} › ${this.functionName(stmt)}`, sourceNodeId: id });
                 continue;
             }
             if (NON_EXECUTABLE.has(stmt.type)) continue;
             if (frontier.length === 0) this.unreachable = true;
+            if (stmt.type === 'BlockStatement' && declaresInBlock(stmt)) {
+                // A block that only limits the scope of its declarations: keep it for code generation.
+                this.scopeStack.push(`b${this.scopeCounter++}`);
+                this.seal(frontier);
+                frontier = this.seal(this.processList(stmt.body, frontier, ctx));
+                this.scopeStack.pop();
+                continue;
+            }
             frontier = this.processStatement(stmt, frontier, ctx);
         }
         this.unreachable = savedUnreachable;
@@ -424,18 +668,20 @@ class FlowchartBuilder {
                 if (stmt.declaration && stmt.declaration.type && /Statement|Declaration$/.test(stmt.declaration.type)) {
                     return this.processStatement(stmt.declaration, frontier, ctx);
                 }
-                return this.processSimple(stmt, frontier);
+                return this.processSimple(stmt, frontier, ctx);
             default:
-                return this.processSimple(stmt, frontier);
+                return this.processSimple(stmt, frontier, ctx);
         }
     }
 
-    processSimple(stmt, frontier) {
+    processSimple(stmt, frontier, ctx) {
         const code = this.src(stmt);
         const isAsync = /\bawait\b/.test(this.src(stmt));
         const { mergeSequentialStatements, maxStatementsPerBlock } = this.options;
 
-        if (mergeSequentialStatements && frontier.length === 1 && !frontier[0].label) {
+        // A statement holding an inline callback gets its own node, so the callback link starts from it.
+        const holdsCallback = this.options.expandCallbacks && this.options.maxCallbackDepth > (ctx.callbackDepth || 0) && this.hasCallback(stmt);
+        if (mergeSequentialStatements && !holdsCallback && frontier.length === 1 && !frontier[0].label) {
             const prev = this.nodeById.get(frontier[0].id);
             if (prev && prev.kind === 'process' && prev.mergeable
                 && prev.unreachable === this.unreachable
@@ -443,18 +689,22 @@ class FlowchartBuilder {
                 prev.code.push(code);
                 prev.end = this.rel(stmt.end);
                 prev.async = prev.async || isAsync;
+                this.annotate(prev.id, stmt, ctx);
                 return frontier;
             }
         }
 
         const id = this.addNode('process', [code], stmt);
         this.nodeById.get(id).async = isAsync;
-        return this.connect(frontier, id);
+        const out = this.connect(frontier, id);
+        this.annotate(id, stmt, ctx);
+        return holdsCallback ? this.seal(out) : out;
     }
 
     processIf(stmt, frontier, ctx) {
         const id = this.addNode('decision', [this.src(stmt.test)], stmt.test, { subtype: 'if' });
         this.connect(frontier, id);
+        this.annotate(id, stmt.test, ctx);
         const thenOut = this.processStatement(stmt.consequent, [{ id, label: 'yes' }], ctx);
         const elseOut = stmt.alternate
             ? this.processStatement(stmt.alternate, [{ id, label: 'no' }], ctx)
@@ -469,6 +719,7 @@ class FlowchartBuilder {
             header: this.text.slice(stmt.start, stmt.body.start).trim()
         });
         this.connect(frontier, header);
+        for (const part of [stmt.init, stmt.test, stmt.update, stmt.right]) if (part) this.annotate(header, part, ctx);
 
         const isIteration = stmt.type === 'ForInStatement' || stmt.type === 'ForOfStatement';
         const [enterLabel, exitLabel] = isIteration ? ['next', 'done'] : ['yes', 'no'];
@@ -479,25 +730,31 @@ class FlowchartBuilder {
         this.connect(bodyOut, header);
 
         const infinite = !isIteration && isAlwaysTruthy(stmt.test);
-        return infinite ? jump.breaks : [{ id: header, label: exitLabel }, ...jump.breaks];
+        return this.recordExit(header, infinite ? jump.breaks : [{ id: header, label: exitLabel }, ...jump.breaks]);
     }
 
     processDoWhile(stmt, frontier, ctx, labels) {
         const entry = this.addNode('junction', [], { start: stmt.start, end: stmt.body.start }, { subtype: 'do' });
         this.connect(frontier, entry);
         const test = this.addNode('loop', [this.src(stmt.test)], stmt.test, { subtype: 'dowhile' });
+        this.annotate(test, stmt.test, ctx);
 
         const jump = { type: 'loop', labels, continueTarget: test, breaks: [] };
         const bodyOut = this.processStatement(stmt.body, [{ id: entry }], { ...ctx, jumps: [...ctx.jumps, jump] });
         this.connect(bodyOut, test);
         this.addEdge(test, entry, 'yes');
 
-        return isAlwaysTruthy(stmt.test) ? jump.breaks : [{ id: test, label: 'no' }, ...jump.breaks];
+        return this.recordExit(entry, isAlwaysTruthy(stmt.test) ? jump.breaks : [{ id: test, label: 'no' }, ...jump.breaks]);
     }
 
     processSwitch(stmt, frontier, ctx, labels) {
-        const id = this.addNode('decision', [this.src(stmt.discriminant)], stmt.discriminant, { subtype: 'switch' });
+        const id = this.addNode('decision', [this.src(stmt.discriminant)], stmt.discriminant, {
+            subtype: 'switch',
+            // Source order of the cases (null = default): the order in which they are tested.
+            caseOrder: stmt.cases.map((c) => (c.test ? this.src(c.test) : null))
+        });
         this.connect(frontier, id);
+        this.annotate(id, stmt.discriminant, ctx);
 
         const jump = { type: 'switch', labels, breaks: [] };
         const caseCtx = { ...ctx, jumps: [...ctx.jumps, jump] };
@@ -515,9 +772,18 @@ class FlowchartBuilder {
 
         const out = [...fallthrough, ...jump.breaks];
         if (!hasDefault) out.push({ id, label: 'no match' });
-        return out;
+        return this.recordExit(id, out);
     }
 
+    /**
+     * try / catch / finally with precise exceptional flow:
+     *  - every statement of the try block that may throw gets an "error" edge
+     *    to the catch (or to the finally when there is no catch);
+     *  - statements of the catch block that may throw go to the finally;
+     *  - return / throw that leave through a finally go to the finally first,
+     *    and the finally continues with "then return" / "rethrow" edges, which
+     *    is what compilers do when they duplicate finally blocks per exit path.
+     */
     processTry(stmt, frontier, ctx) {
         const tryId = this.addNode('try', [], { start: stmt.start, end: stmt.block.start + 1 }, {});
         const tryMeta = this.nodeById.get(tryId).meta;
@@ -527,24 +793,87 @@ class FlowchartBuilder {
         if (stmt.handler) {
             catchId = this.addNode('catch', stmt.handler.param ? [this.src(stmt.handler.param)] : [], { start: stmt.handler.start, end: stmt.handler.body.start + 1 });
             tryMeta.catchId = catchId;
-            this.addEdge(tryId, catchId, 'error');
         }
-
-        const tryCtx = catchId ? { ...ctx, catchTarget: catchId } : ctx;
-        const tryOut = this.processList(stmt.block.body, [{ id: tryId }], tryCtx);
-        const catchOut = catchId ? this.processList(stmt.handler.body.body, [{ id: catchId }], ctx) : [];
-
+        let finallyId = null;
         if (stmt.finalizer) {
-            const finallyId = this.addNode('finally', [], { start: stmt.finalizer.start, end: stmt.finalizer.start + 1 });
+            finallyId = this.addNode('finally', [], { start: stmt.finalizer.start, end: stmt.finalizer.start + 1 });
             tryMeta.finallyId = finallyId;
-            this.connect([...tryOut, ...catchOut], finallyId);
-            this.seal([{ id: finallyId }]);
-            const out = this.seal(this.processList(stmt.finalizer.body, [{ id: finallyId }], ctx));
-            // Where the finally block ends, so code generation can close it.
-            this.nodeById.get(finallyId).meta.exits = out.map((f) => ({ id: f.id, label: f.label || '' }));
-            return out;
         }
-        return [...tryOut, ...catchOut];
+
+        const abrupt = new Set();
+        const tryHandler = { catchId, finallyId, abrupt, detailed: false };
+        const tryOut = this.processList(stmt.block.body, [{ id: tryId }], { ...ctx, handlers: [...ctx.handlers, tryHandler] });
+
+        if (catchId) {
+            // The exception can happen before any statement of the try block runs:
+            // keep a summary edge when no statement got a precise one.
+            if (!tryHandler.detailed) this.addEdge(tryId, catchId, 'error', undefined, 'exception');
+        }
+
+        const catchCtx = finallyId
+            ? { ...ctx, handlers: [...ctx.handlers, { catchId: null, finallyId, abrupt, detailed: false }] }
+            : ctx;
+        const catchOut = catchId ? this.processList(stmt.handler.body.body, [{ id: catchId }], catchCtx) : [];
+
+        if (!finallyId) return [...tryOut, ...catchOut];
+
+        this.connect([...tryOut, ...catchOut], finallyId);
+        this.seal([{ id: finallyId }]);
+        const bodyOut = this.processList(stmt.finalizer.body, [{ id: finallyId }], ctx);
+        if (bodyOut.length === 0) return [];
+
+        // An explicit end of the finally block: code generation closes the block there,
+        // and the interrupted return / throw continues from it.
+        const endId = this.addNode('junction', [], { start: stmt.finalizer.end - 1, end: stmt.finalizer.end }, { subtype: 'finallyEnd', finallyId });
+        this.connect(bodyOut, endId);
+        this.nodeById.get(finallyId).meta.endId = endId;
+        for (const type of abrupt) {
+            const target = type === 'return' ? this.returnTarget(ctx) : this.throwTarget(ctx);
+            this.addEdge(endId, target.id, type === 'return' ? 'then return' : 'rethrow', undefined, 'abrupt');
+        }
+        return [{ id: endId }];
+    }
+
+    /**
+     * Remembers the frontier leaving a loop / switch: once it is connected to the
+     * next node, that node is stored as `meta.exitId`, a structural hint for code
+     * generation (it tells a `break` exit from a `return` exit).
+     */
+    recordExit(nodeId, out) {
+        this.pendingExits.push({ nodeId, items: out.map((f) => ({ id: f.id, label: f.label || '' })) });
+        return out;
+    }
+
+    resolveExits() {
+        for (const { nodeId, items } of this.pendingExits) {
+            const targets = new Set();
+            for (const item of items) {
+                const edge = this.edges.find((e) => e.from === item.id && (e.label || '') === item.label && !e.kind);
+                if (edge) targets.add(edge.to);
+            }
+            if (targets.size === 1) this.nodeById.get(nodeId).meta.exitId = [...targets][0];
+        }
+        this.pendingExits = [];
+    }
+
+    /** Where a `return` goes: the innermost enclosing finally, else the end of the function. */
+    returnTarget(ctx) {
+        for (let i = ctx.handlers.length - 1; i >= 0; i--) {
+            const handler = ctx.handlers[i];
+            if (handler.finallyId) {
+                handler.abrupt.add('return');
+                return { id: handler.finallyId, viaFinally: true };
+            }
+        }
+        return { id: ctx.exitId, viaFinally: false };
+    }
+
+    /** Where a `throw` goes: the innermost catch or finally, else out of the function. */
+    throwTarget(ctx) {
+        const target = this.exceptionTarget(ctx);
+        if (!target) return { id: ctx.exitId, viaFinally: false, uncaught: true };
+        if (target.viaFinally) target.handler.abrupt.add('throw');
+        return target;
     }
 
     processLabeled(stmt, frontier, ctx) {
@@ -565,18 +894,20 @@ class FlowchartBuilder {
     processReturn(stmt, frontier, ctx) {
         const id = this.addNode('return', [this.src(stmt)], stmt);
         this.connect(frontier, id);
-        this.addEdge(id, ctx.exitId);
+        if (stmt.argument) this.annotate(id, stmt.argument, ctx);
+        const target = this.returnTarget(ctx);
+        if (target.viaFinally) this.addEdge(id, target.id, 'return', undefined, 'abrupt');
+        else this.addEdge(id, target.id);
         return [];
     }
 
     processThrow(stmt, frontier, ctx) {
         const id = this.addNode('throw', [this.src(stmt)], stmt);
         this.connect(frontier, id);
-        if (ctx.catchTarget) {
-            this.addEdge(id, ctx.catchTarget, 'caught');
-        } else {
-            this.addEdge(id, ctx.exitId, 'throws');
-        }
+        this.collectCallbacks(id, stmt.argument, ctx);
+        const target = this.throwTarget(ctx);
+        const label = target.uncaught ? 'throws' : (target.viaFinally ? 'throws' : 'caught');
+        this.addEdge(id, target.id, label, undefined, 'exception');
         return [];
     }
 
@@ -613,7 +944,7 @@ class FlowchartBuilder {
         this.unreachable = false;
         this.pendingNested = [];
 
-        const isFunction = unit.kind === 'function';
+        const isFunction = unit.kind === 'function' || unit.kind === 'callback' || unit.kind === 'nested';
         const startRange = isFunction
             ? { start: unit.rangeNode.start, end: unit.fn.body.start }
             : unit.rangeNode;
@@ -622,18 +953,22 @@ class FlowchartBuilder {
         const endId = this.addNode('end', [], isFunction ? { start: unit.fn.end - 1, end: unit.fn.end } : undefined);
         unit.startId = startId;
         unit.endId = endId;
-        const ctx = { jumps: [], catchTarget: null, exitId: endId, unitName: unit.name };
+        const ctx = { jumps: [], handlers: [], exitId: endId, unitName: unit.name, callbackDepth: unit.callbackDepth || 0 };
+        this.pendingCallbacks = [];
+        if (unit.sourceNodeId) this.addEdge(unit.sourceNodeId, startId, unit.kind === 'nested' ? 'defines' : 'callback', undefined, 'callback');
 
         let out;
         if (isFunction && unit.fn.body.type !== 'BlockStatement') {
             const id = this.addNode('return', [`return ${this.src(unit.fn.body)}`], unit.fn.body);
             this.addEdge(startId, id);
+            this.collectCallbacks(id, unit.fn.body, ctx);
             out = [{ id }];
         } else {
             const statements = isFunction ? unit.fn.body.body : unit.statements;
             out = this.processList(statements, [{ id: startId }], ctx);
         }
         this.connect(out, endId);
+        this.resolveExits();
 
         unit.complexity = computeComplexity(isFunction ? unit.fn.body : { type: 'Program', body: unit.statements });
         unit.start = this.rel(unit.rangeNode.start);
@@ -642,9 +977,11 @@ class FlowchartBuilder {
         const { metrics, insights } = analyzeUnit({
             body: isFunction ? unit.fn.body : unit.statements,
             params: isFunction ? unit.fn.params : [],
-            name: isFunction ? unit.name : undefined,
+            name: isFunction && unit.kind !== 'callback' ? unit.name : undefined,
             source: this.text.slice(unit.rangeNode.start, unit.rangeNode.end),
-            cyclomatic: unit.complexity
+            cyclomatic: unit.complexity,
+            // Callbacks shown as their own flows report their own insights.
+            lambdaInsights: !this.options.expandCallbacks
         });
         unit.metrics = metrics;
         unit.insights = insights.map((insight) => ({
@@ -655,12 +992,23 @@ class FlowchartBuilder {
         }));
         this.addUnreachableInsights(unit);
 
-        // Nested function declarations become their own flows, right after their parent.
-        const nested = this.pendingNested;
+        // Inline callbacks and nested function declarations become their own flows, right after their parent.
         const position = this.units.indexOf(unit) + 1;
-        nested.forEach((n, i) => {
-            this.units.splice(position + i, 0, { kind: 'function', name: n.name, fn: n.fn, rangeNode: n.fn, context: { fnKind: 'function' } });
-        });
+        const followers = [
+            ...this.pendingCallbacks.map((c) => ({
+                kind: 'callback',
+                name: c.name,
+                fn: c.fn,
+                rangeNode: c.fn,
+                sourceNodeId: c.sourceNodeId,
+                callbackDepth: c.depth,
+                context: { fnKind: 'callback', callee: c.callee, jsxAttribute: c.jsxAttribute }
+            })),
+            ...this.pendingNested.map((n) => ({
+                kind: 'nested', name: n.name, fn: n.fn, rangeNode: n.fn, sourceNodeId: n.sourceNodeId, context: { fnKind: 'function' }
+            }))
+        ];
+        this.units.splice(position, 0, ...followers);
     }
 
     /** One insight per block of unreachable code (its first node). */
@@ -703,6 +1051,7 @@ class FlowchartBuilder {
                 const node = { id: n.id, kind: n.kind, unit: n.unit, code: n.code, meta: n.meta };
                 if (n.unreachable) node.unreachable = true;
                 if (n.async) node.async = true;
+                if (n.scope) node.scope = n.scope;
                 if (n.start !== undefined) {
                     node.start = n.start;
                     node.end = n.end;
@@ -728,19 +1077,23 @@ class FlowchartBuilder {
         }));
         const insights = this.units.flatMap((u) => u.insights)
             .sort((a, b) => (a.severity === b.severity ? a.start - b.start : a.severity === 'warning' ? -1 : 1));
-        const named = units.filter((u, i) => this.units[i].kind !== 'main').map((u) => u.name);
+        const embedded = (u) => u.kind === 'callback' || u.kind === 'nested';
+        const named = units.filter((u, i) => this.units[i].kind !== 'main' && !embedded(this.units[i])).map((u) => u.name);
+        const primary = this.units.filter((u) => !embedded(u));
         let title;
-        if (units.length === 1) {
+        if (primary.length === 1) {
+            title = primary[0].name;
+        } else if (units.length === 1) {
             title = units[0].name;
         } else if (named.length === 0) {
             title = 'Selection';
         } else {
-            title = named.slice(0, 2).join(', ') + (units.length > 2 ? ` +${units.length - 2}` : '');
+            title = named.slice(0, 2).join(', ') + (primary.length > 2 ? ` +${primary.length - 2}` : '');
         }
         const graph = this.toGraph();
         return {
             graph,
-            mermaid: toMermaid(graph, { maxLabelLength: this.options.maxLabelLength }),
+            mermaid: toMermaid(graph, this.options),
             title,
             units,
             complexity: Math.max(...units.map((u) => u.complexity)),
