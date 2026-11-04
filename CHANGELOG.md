@@ -15,6 +15,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
   - animated zoom around the pointer, drag to pan, double-click to fit, minimap, focus mode on hover, tooltip with highlighted code, selection outline, cursor-sync highlight, gliding nodes and morphing arrows while editing;
   - self-contained SVG / PNG export (colours resolved).
 - `flowchartGenerator.style` and `flowchartGenerator.animations` settings.
+- New extension icon (a mini flowchart: start, condition, two branches, end) in 256×256, and an ASCII art logo shown in the README and in the Flowchart Generator output channel.
 - Layout tests that check invariants (no overlap, attached and orthogonal edges, nodes inside their frame) on hundreds of real-world functions.
 
 ### Changed

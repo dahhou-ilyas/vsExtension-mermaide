@@ -1,5 +1,15 @@
 # Flowchart Generator
 
+```text
+   ╭───────╮     ███████╗██╗      ██████╗ ██╗    ██╗ ██████╗██╗  ██╗ █████╗ ██████╗ ████████╗
+   ╰───┬───╯     ██╔════╝██║     ██╔═══██╗██║    ██║██╔════╝██║  ██║██╔══██╗██╔══██╗╚══██╔══╝
+  ┌────◆────┐    █████╗  ██║     ██║   ██║██║ █╗ ██║██║     ███████║███████║██████╔╝   ██║
+ ┌┴─┐     ┌─┴┐   ██╔══╝  ██║     ██║   ██║██║███╗██║██║     ██╔══██║██╔══██║██╔══██╗   ██║
+ └┬─┘     └─┬┘   ██║     ███████╗╚██████╔╝╚███╔███╔╝╚██████╗██║  ██║██║  ██║██║  ██║   ██║
+  └────┬────┘    ╚═╝     ╚══════╝ ╚═════╝  ╚══╝╚══╝  ╚═════╝╚═╝  ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝   ╚═╝
+       ●          G E N E R A T O R   ·   code ⇄ flowchart for VS Code
+```
+
 **Turn JavaScript and TypeScript into interactive flowcharts, and flowcharts back into code, right inside VS Code.**
 
 Flowchart Generator parses your code, builds its real control-flow graph and draws it with its **own rendering engine**: a layered layout made for control flow, classic flowchart symbols, smooth curved arrows, focus mode and minimap. Click any node to jump to the code. The panel also shows complexity metrics and actionable insights.
