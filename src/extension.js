@@ -51,6 +51,15 @@ async function editorAndTarget(arg) {
  */
 function activate(context) {
     const output = vscode.window.createOutputChannel('Flowchart Generator');
+    const { version } = require('../package.json');
+    [
+        '',
+        '  ╭─◆─╮  ╔═╗╦  ╔═╗╦ ╦╔═╗╦ ╦╔═╗╦═╗╔╦╗',
+        '  │   │  ╠╣ ║  ║ ║║║║║  ╠═╣╠═╣╠╦╝ ║',
+        '  ╰─┬─╯  ╚  ╩═╝╚═╝╚╩╝╚═╝╩ ╩╩ ╩╩╚═ ╩  generator',
+        `  v${version} · code ⇄ flowchart`,
+        ''
+    ].forEach((line) => output.appendLine(line));
     const store = new DiagramStore(context.workspaceState, () => getSettings().historyLimit);
     const service = new FlowchartService(store, output);
     const previews = new PreviewContentProvider();
