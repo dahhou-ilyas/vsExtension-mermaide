@@ -7,6 +7,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ### Added
 - The parameters of inline callbacks and nested functions can be edited on the start node of their flow; the function head is rewritten and an unchanged body is kept as written.
+- New extension icon `{ ◆ }`: the braces of the code are the two branches of a decision that merge again — code and flowchart are the same thing.
 - State machine fallback: block-scoped variables that would clash once flattened (same name in several blocks, catch parameters, a block shadowing a parameter or an outer name) are renamed in their scope instead of sharing one variable.
 
 ## [3.1.0] - 2026-11-05
