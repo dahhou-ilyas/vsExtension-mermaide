@@ -19,3 +19,5 @@ jsconfig.json
 CONTRIBUTING.md
 SECURITY.md
 *.vsix
+docs/**
+PUBLISHING.md
