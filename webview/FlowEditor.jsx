@@ -163,7 +163,7 @@ export function Inspector({ graph, selectedId, onChange, onSelect }) {
     const deletable = !['start', 'end', 'try', 'catch', 'finally'].includes(node.kind);
     const unit = graph.units[node.unit];
     const embedded = unit && (unit.kind === 'callback' || unit.kind === 'nested');
-    const signatureElsewhere = embedded && node.kind === 'start';
+    const embeddedStart = embedded && node.kind === 'start';
 
     return (
         <div className="fc-inspector">
@@ -175,13 +175,14 @@ export function Inspector({ graph, selectedId, onChange, onSelect }) {
             {embedded ? (
                 <p className="fc-muted">
                     {unit.kind === 'nested' ? 'Nested function' : 'Inline callback'} <code>{unit.name}</code>: changes to this flow are written back into the statement that contains it.
-                    {signatureElsewhere ? ' Its parameters are edited in that statement.' : ''}
+                    {embeddedStart ? ' Edit its parameters here; its name belongs to the parent statement.' : ''}
                 </p>
             ) : null}
 
-            {EDITABLE.has(node.kind) && !signatureElsewhere && !(node.kind === 'start' && (node.meta.isMain || node.meta.blockName)) ? (
+            {EDITABLE.has(node.kind) && !(node.kind === 'start' && (node.meta.isMain || node.meta.blockName)) ? (
                 <div className="fc-form">
-                    {node.kind === 'start' ? (
+                    {embeddedStart ? field('params', 'Parameters', false, 'item, index') : null}
+                    {node.kind === 'start' && !embeddedStart ? (
                         <>
                             {field('name', 'Function name', false, 'myFunction')}
                             {field('params', 'Parameters', false, 'a, b = 1')}

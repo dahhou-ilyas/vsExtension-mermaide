@@ -69,7 +69,7 @@ Flowcharts are drawn by a purpose-built engine (no Mermaid, no layout library):
 - **Design from scratch**: **Flowchart: New Flowchart** creates an empty function to design visually, then inserts the generated code at your cursor or opens it in a new file.
 - **Mermaid → code**: **Flowchart: Generate Code from Mermaid Flowchart** converts any `flowchart` / `graph` diagram, for example one from a Markdown file. It understands node shapes (`{condition}`, `{{loop}}`, `(return …)`, …) and yes/no edge labels in English or French, and it recognizes loops.
 - **Your code stays your code**: statements you did not touch are printed back exactly as written (formatting, comments, blank lines, multi-line conditions, original label names). Editing one node changes one line of the diff, not the whole function.
-- **Edit callbacks and nested functions too**: the flows of inline callbacks (`forEach`, `then`, event handlers…) and nested functions are editable; the new body is written back into the statement that contains it, and `(x) => expression` stays concise when it can.
+- **Edit callbacks and nested functions too**: the flows of inline callbacks (`forEach`, `then`, event handlers…) and nested functions are editable, parameters included (on their start node); the new code is written back into the statement that contains it, and `(x) => expression` stays concise when it can.
 - **Correct by construction**: the generator rebuilds structured code (`if / else if / else`, loops, `switch` with fall-through, `try / catch / finally`, labeled `break` / `continue` only when needed). If a hand-drawn chart has no structured equivalent, it falls back to an equivalent state machine and tells you so.
 
 #### How the code generation works
@@ -78,7 +78,7 @@ Flowcharts are drawn by a purpose-built engine (no Mermaid, no layout library):
 2. Merge points are found with immediate post-dominators, which is the same approach compilers use to emit structured code (Relooper / Stackifier).
 3. Loops are identified from their back edges. `break` and `continue` come from jumps to a loop's exit or header, and labels are added only when a jump crosses several loops or a `switch`.
 4. **Fidelity, in the spirit of Recast and Roslyn trivia**: when the chart is built, every compound statement records a signature of the code it produces, and comments are attached to the statement they describe (above it, at the end of its line, or after the last statement of a block). At generation time, a statement whose signature is unchanged is reprinted from the original text, re-indented exactly; only edited parts are regenerated. Lines inside template literals are never re-indented.
-5. If a part of the chart cannot be expressed this way (jumping into the middle of a loop, for example), the function is generated as a state machine (`switch (state)` in a loop). The Böhm–Jacopini theorem guarantees this is always possible. Every construct is supported: declarations are hoisted (destructuring included), `for` loops get init / update states, `for…of` drives the iterator by hand and closes it when left early, `for…in` iterates over a snapshot of the keys, and `try / catch / finally` use a table of protected states — like the exception tables of compiled code — with a `finally` that resumes the interrupted `return`, `throw` or jump. Generated names never clash with your variables.
+5. If a part of the chart cannot be expressed this way (jumping into the middle of a loop, for example), the function is generated as a state machine (`switch (state)` in a loop). The Böhm–Jacopini theorem guarantees this is always possible. Every construct is supported: declarations are hoisted (destructuring included), `for` loops get init / update states, `for…of` drives the iterator by hand and closes it when left early, `for…in` iterates over a snapshot of the keys, and `try / catch / finally` use a table of protected states — like the exception tables of compiled code — with a `finally` that resumes the interrupted `return`, `throw` or jump. Generated names never clash with your variables, and block-scoped variables that would collide once flattened (same name in two blocks, a block shadowing a parameter) are renamed in their block (`x` → `x2`), strings, properties and template literals excepted.
 
 The test suite checks this end to end. Each sample function goes code → chart → code (and code → Mermaid text → code), and the original and regenerated versions are executed on the same inputs and must return the same results.
 
@@ -111,8 +111,7 @@ VS Code 1.96 or newer. No other dependency: everything is bundled.
 
 - "May throw" is decided syntactically (calls, `new`, `await`, `yield`, tagged templates, `throw`). Property access on `null` is not considered, which keeps diagrams readable.
 - `break` / `continue` that leave a `try` block with a `finally` are drawn going directly to their target.
-- The parameters of an inline callback are edited in the statement that contains it, not in the callback flow.
-- In state-machine mode, block-scoped variables with the same name share one variable (you get a warning), and closures created in a loop share the loop variable.
+- In state-machine mode, closures created inside a loop share the loop variables between iterations (you get a warning).
 - Charts imported from Mermaid text have no original code to reuse: they are regenerated in full, and their callback flows stay read-only.
 
 ## Development

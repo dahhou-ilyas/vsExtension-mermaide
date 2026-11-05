@@ -453,6 +453,20 @@ describe('generateCode (round trip: code → flowchart → code)', () => {
                 }`,
                 inputs: [[0], [1], [2]]
             },
+            blockScopes: {
+                code: `function f(a, total) {
+                    const x = 1;
+                    const out = [];
+                    if (a) { const x = 2; out.push(x); }
+                    for (let i = 0; i < 2; i++) { const x = i * 10; out.push(x, \`\${x}!\`, { x }); }
+                    try { throw new Error('e'); } catch (x) { out.push(x.message); }
+                    { let a = 5; out.push(a); }
+                    switch (a) { case 1: { const total = 'case'; out.push(total); } }
+                    out.push(x, a, total);
+                    return JSON.stringify(out);
+                }`,
+                inputs: [[1, 7], [0, 8]]
+            },
             shadowedNames: {
                 code: `function f(state, $state) {
                     let total = state + $state;

@@ -230,4 +230,115 @@ function identifiers(text) {
     return new Set(String(text).match(/[A-Za-z_$][\w$]*/g) || []);
 }
 
-module.exports = { scanTopLevel, splitTopLevel, assignmentIndex, patternNames, parseDeclaration, parseForHeader, identifiers };
+/**
+ * Renames identifiers in a piece of code, leaving strings, comments, regular
+ * expressions, property names (`a.x`, `{ x: 1 }`) alone. Shorthand
+ * properties are expanded (`{ x }` → `{ x: x2 }`) so object literals and
+ * destructuring patterns keep their keys.
+ * @param {string} code
+ * @param {Map<string, string>} mapping
+ */
+function renameIdentifiers(code, mapping) {
+    const text = String(code);
+    if (!mapping.size) return text;
+    let out = '';
+    let i = 0;
+    /** Bracket stack; a template literal pushes '`', a `${` pushes '${'. */
+    const stack = [];
+    let prev = '';
+    let prevWord = '';
+    const top = () => stack[stack.length - 1];
+    const nextSignificant = (from) => {
+        let j = from;
+        while (j < text.length && /\s/.test(text[j])) j++;
+        return text[j] || '';
+    };
+    while (i < text.length) {
+        const ch = text[i];
+        if (top() === '`') {
+            // Inside a template literal: copy until `${` or the closing backtick.
+            if (ch === '\\') { out += text.slice(i, i + 2); i += 2; continue; }
+            if (ch === '`') { stack.pop(); out += ch; i++; prev = 'a'; continue; }
+            if (ch === '$' && text[i + 1] === '{') { stack.push('${'); out += '${'; i += 2; prev = '{'; prevWord = ''; continue; }
+            out += ch;
+            i++;
+            continue;
+        }
+        if (ch === '"' || ch === "'") {
+            let j = i + 1;
+            while (j < text.length && text[j] !== ch && text[j] !== '\n') j += text[j] === '\\' ? 2 : 1;
+            out += text.slice(i, j + 1);
+            i = j + 1;
+            prev = 'a';
+            continue;
+        }
+        if (ch === '`') { stack.push('`'); out += ch; i++; continue; }
+        if (ch === '/' && text[i + 1] === '/') {
+            const end = text.indexOf('\n', i);
+            const stop = end < 0 ? text.length : end;
+            out += text.slice(i, stop);
+            i = stop;
+            continue;
+        }
+        if (ch === '/' && text[i + 1] === '*') {
+            const end = text.indexOf('*/', i + 2);
+            const stop = end < 0 ? text.length : end + 2;
+            out += text.slice(i, stop);
+            i = stop;
+            continue;
+        }
+        if (ch === '/' && (!prev || '(,=:[!&|?{};+-*%<>~^'.includes(prev) || /^(return|typeof|case|in|of|new|delete|void|throw|yield|await)$/.test(prevWord))) {
+            let j = i + 1;
+            let inClass = false;
+            while (j < text.length && text[j] !== '\n') {
+                if (text[j] === '\\') j++;
+                else if (text[j] === '[') inClass = true;
+                else if (text[j] === ']') inClass = false;
+                else if (text[j] === '/' && !inClass) break;
+                j++;
+            }
+            j++;
+            while (j < text.length && /[a-z]/i.test(text[j])) j++;
+            out += text.slice(i, j);
+            i = j;
+            prev = 'a';
+            prevWord = '';
+            continue;
+        }
+        if (/[A-Za-z_$]/.test(ch)) {
+            let j = i;
+            while (j < text.length && /[\w$]/.test(text[j])) j++;
+            const word = text.slice(i, j);
+            const before = out.replace(/\s+$/, '');
+            const member = /\.$/.test(before) && !/\.\.\.$/.test(before);
+            const inObject = top() === '{';
+            const after = nextSignificant(j);
+            const key = inObject && (prev === '{' || prev === ',') && after === ':';
+            const shorthand = inObject && (prev === '{' || prev === ',') && (after === ',' || after === '}' || after === '=');
+            if (mapping.has(word) && !member && !key && !/^\d/.test(word)) {
+                out += shorthand ? `${word}: ${mapping.get(word)}` : mapping.get(word);
+            } else {
+                out += word;
+            }
+            prev = 'a';
+            prevWord = word;
+            i = j;
+            continue;
+        }
+        if ('([{'.includes(ch)) stack.push(ch);
+        else if (')]'.includes(ch)) stack.pop();
+        else if (ch === '}') {
+            if (top() === '${') { stack.pop(); out += ch; i++; prev = 'a'; continue; }
+            stack.pop();
+        }
+        if (!/\s/.test(ch)) {
+            prev = ch;
+            prevWord = '';
+        }
+        out += ch;
+        i++;
+    }
+    return out;
+}
+
+module.exports = { renameIdentifiers, scanTopLevel, splitTopLevel, assignmentIndex, patternNames, parseDeclaration, parseForHeader, identifiers };

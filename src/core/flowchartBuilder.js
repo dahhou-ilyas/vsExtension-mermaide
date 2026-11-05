@@ -248,6 +248,9 @@ class FlowchartBuilder {
         this.pendingCallbacks = [];
         this.pendingExits = [];
         this.scopeStack = [];
+        /** Lexical scopes (blocks, loop heads, catch clauses, switch bodies) around the current node. */
+        this.lexStack = [];
+        this.lexCounter = 0;
         this.scopeCounter = 0;
         /** @type {Map<string, number>} */
         this.callbackNames = new Map();
@@ -289,6 +292,7 @@ class FlowchartBuilder {
             unit: this.unitIndex,
             unreachable: this.unreachable,
             ...(this.scopeStack.length ? { scope: [...this.scopeStack] } : {}),
+            ...(this.lexStack.length ? { lex: [...this.lexStack] } : {}),
             mergeable: kind === 'process',
             async: false
         };
@@ -451,18 +455,23 @@ class FlowchartBuilder {
         const texts = (node.code || []).map((text, line) => ({ field: 'code', line, text }));
         if (node.meta && node.meta.header) texts.push({ field: 'header', line: 0, text: node.meta.header });
         const expression = fn.body.type !== 'BlockStatement';
+        // The whole function (`async (a, b) => …`): replaced when its parameters are edited.
+        const whole = this.text.slice(fn.start, fn.end);
         for (const candidate of texts) {
             const at = this.text.indexOf(candidate.text, Math.max(0, start - candidate.text.length));
             // The text is the slice of the source that contains the body.
             if (at >= 0 && at <= start && at + candidate.text.length >= end) {
-                return { field: candidate.field, line: candidate.line, range: [start - at, end - at], expression };
+                const fnRange = fn.start >= at && fn.end <= at + candidate.text.length ? [fn.start - at, fn.end - at] : undefined;
+                return { field: candidate.field, line: candidate.line, range: [start - at, end - at], expression, ...(fnRange ? { fn: fnRange } : {}) };
             }
         }
         // Synthetic text (`return <expression body>`): the body appears once in it.
         for (const candidate of texts) {
             const at = candidate.text.indexOf(body);
             if (at >= 0 && candidate.text.indexOf(body, at + 1) < 0) {
-                return { field: candidate.field, line: candidate.line, range: [at, at + body.length], expression };
+                const fnAt = candidate.text.indexOf(whole);
+                const fnRange = fnAt >= 0 && candidate.text.indexOf(whole, fnAt + 1) < 0 ? [fnAt, fnAt + whole.length] : undefined;
+                return { field: candidate.field, line: candidate.line, range: [at, at + body.length], expression, ...(fnRange ? { fn: fnRange } : {}) };
             }
         }
         return null;
@@ -809,6 +818,17 @@ class FlowchartBuilder {
         };
     }
 
+    /** Runs `fn` inside a new lexical scope when `declares` is true. */
+    withLex(declares, fn) {
+        if (!declares) return fn();
+        this.lexStack.push(`l${this.lexCounter++}`);
+        try {
+            return fn();
+        } finally {
+            this.lexStack.pop();
+        }
+    }
+
     /* ---------- statement processing ---------- */
 
     processList(statements, frontier, ctx) {
@@ -843,7 +863,7 @@ class FlowchartBuilder {
                 this.seal(frontier);
                 // Comments of the block lead its first statement.
                 this.placeTrivia(stmt, null);
-                frontier = this.seal(this.processList(stmt.body, frontier, ctx));
+                frontier = this.seal(this.withLex(true, () => this.processList(stmt.body, frontier, ctx)));
                 this.scopeStack.pop();
                 continue;
             }
@@ -868,18 +888,23 @@ class FlowchartBuilder {
     processStatement(stmt, frontier, ctx, labels = []) {
         switch (stmt.type) {
             case 'BlockStatement':
-                return this.processList(stmt.body, frontier, ctx);
+                return this.withLex(declaresInBlock(stmt), () => this.processList(stmt.body, frontier, ctx));
             case 'IfStatement':
                 return this.seal(this.processIf(stmt, frontier, ctx));
             case 'WhileStatement':
             case 'ForStatement':
             case 'ForInStatement':
-            case 'ForOfStatement':
-                return this.seal(this.processLoop(stmt, frontier, ctx, labels));
+            case 'ForOfStatement': {
+                const head = stmt.init || stmt.left;
+                const lexical = !!head && head.type === 'VariableDeclaration' && head.kind !== 'var';
+                return this.seal(this.withLex(lexical, () => this.processLoop(stmt, frontier, ctx, labels)));
+            }
             case 'DoWhileStatement':
                 return this.seal(this.processDoWhile(stmt, frontier, ctx, labels));
-            case 'SwitchStatement':
-                return this.seal(this.processSwitch(stmt, frontier, ctx, labels));
+            case 'SwitchStatement': {
+                const lexical = stmt.cases.some((c) => declaresInBlock({ body: c.consequent }));
+                return this.seal(this.withLex(lexical, () => this.processSwitch(stmt, frontier, ctx, labels)));
+            }
             case 'TryStatement':
                 return this.seal(this.processTry(stmt, frontier, ctx));
             case 'LabeledStatement':
@@ -1033,9 +1058,13 @@ class FlowchartBuilder {
         this.connect(frontier, tryId);
 
         let catchId = null;
+        // The catch clause is a scope: its parameter and the declarations of its body.
+        const catchLex = stmt.handler ? `l${this.lexCounter++}` : null;
         if (stmt.handler) {
+            this.lexStack.push(catchLex);
             catchId = this.addNode('catch', stmt.handler.param ? [this.src(stmt.handler.param)] : [], { start: stmt.handler.start, end: stmt.handler.body.start + 1 });
             tryMeta.catchId = catchId;
+            this.lexStack.pop();
         }
         let finallyId = null;
         if (stmt.finalizer) {
@@ -1056,7 +1085,12 @@ class FlowchartBuilder {
         const catchCtx = finallyId
             ? { ...ctx, handlers: [...ctx.handlers, { catchId: null, finallyId, abrupt, detailed: false }] }
             : ctx;
-        const catchOut = catchId ? this.processList(stmt.handler.body.body, [{ id: catchId }], catchCtx) : [];
+        let catchOut = [];
+        if (catchId) {
+            this.lexStack.push(catchLex);
+            catchOut = this.processList(stmt.handler.body.body, [{ id: catchId }], catchCtx);
+            this.lexStack.pop();
+        }
 
         if (!finallyId) return [...tryOut, ...catchOut];
 
@@ -1304,6 +1338,7 @@ class FlowchartBuilder {
                 if (n.unreachable) node.unreachable = true;
                 if (n.async) node.async = true;
                 if (n.scope) node.scope = n.scope;
+                if (n.lex) node.lex = n.lex;
                 if (n.comments) node.comments = n.comments;
                 if (n.start !== undefined) {
                     node.start = n.start;
