@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { generateCode } from '../src/core/codegen';
-import { updateNode, insertOnEdge, deleteNode, outgoingEdges, isEditable, INSERTABLE } from '../src/core/graphEdit';
+import { updateNode, insertOnEdge, deleteNode, outgoingEdges, isEditable, editableText, INSERTABLE } from '../src/core/graphEdit';
 import { edgeLabel, displayLines, fullText } from '../src/core/graph';
 
 const KIND_NAMES = {
@@ -60,7 +60,7 @@ function initialFields(node) {
                 ? { header: meta.header || '' }
                 : { code: (node.code && node.code[0]) || '' };
         case 'process':
-            return { code: (node.code || []).join('\n') };
+            return { code: editableText(node) };
         default:
             return { code: (node.code && node.code[0]) || '' };
     }
@@ -161,6 +161,9 @@ export function Inspector({ graph, selectedId, onChange, onSelect }) {
         return !['return', 'throw', 'end'].includes(node.kind) && !(node.kind === 'try' && edge.label === 'error') && target;
     });
     const deletable = !['start', 'end', 'try', 'catch', 'finally'].includes(node.kind);
+    const unit = graph.units[node.unit];
+    const embedded = unit && (unit.kind === 'callback' || unit.kind === 'nested');
+    const signatureElsewhere = embedded && node.kind === 'start';
 
     return (
         <div className="fc-inspector">
@@ -169,7 +172,14 @@ export function Inspector({ graph, selectedId, onChange, onSelect }) {
                 <code>{node.id}</code>
             </div>
 
-            {EDITABLE.has(node.kind) && !(node.kind === 'start' && (node.meta.isMain || node.meta.blockName)) ? (
+            {embedded ? (
+                <p className="fc-muted">
+                    {unit.kind === 'nested' ? 'Nested function' : 'Inline callback'} <code>{unit.name}</code>: changes to this flow are written back into the statement that contains it.
+                    {signatureElsewhere ? ' Its parameters are edited in that statement.' : ''}
+                </p>
+            ) : null}
+
+            {EDITABLE.has(node.kind) && !signatureElsewhere && !(node.kind === 'start' && (node.meta.isMain || node.meta.blockName)) ? (
                 <div className="fc-form">
                     {node.kind === 'start' ? (
                         <>
@@ -235,18 +245,19 @@ export function CodePreview({ graph }) {
         }
     }, [graph]);
     const stateMachine = result.units.some((u) => u.mode === 'state-machine');
+    const original = result.units.length > 0 && result.units.every((u) => u.mode === 'original');
+    const badge = stateMachine
+        ? { label: 'state machine', className: 'fc-warning-strong', title: 'The chart has jumps that do not map to if / loops; the code uses an equivalent state machine.' }
+        : original
+            ? { label: 'unchanged', className: 'fc-complexity-low', title: 'Nothing changed: the code is exactly the original, formatting and comments included.' }
+            : { label: 'structured', className: 'fc-complexity-low', title: 'The chart maps to structured code (if / else, loops, switch, try). Unchanged statements and comments are kept as written.' };
 
     return (
         <div className="fc-code-preview">
             <div className="fc-code-header">
                 <span>Generated code</span>
                 {result.error ? null : (
-                    <span className={`fc-badge ${stateMachine ? 'fc-warning-strong' : 'fc-complexity-low'}`}
-                        title={stateMachine
-                            ? 'The chart has jumps that do not map to if / loops; the code uses an equivalent state machine.'
-                            : 'The chart maps to structured code (if / else, loops, switch, try).'}>
-                        {stateMachine ? 'state machine' : 'structured'}
-                    </span>
+                    <span className={`fc-badge ${badge.className}`} title={badge.title}>{badge.label}</span>
                 )}
             </div>
             {result.error ? <p className="fc-form-error">{result.error}</p> : <pre><code>{result.code}</code></pre>}

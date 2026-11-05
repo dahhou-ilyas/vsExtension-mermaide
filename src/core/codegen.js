@@ -13,9 +13,18 @@
  *     the middle of a loop), fall back to a state machine
  *     (`while (true) { switch (state) { ... } }`). By the Böhm–Jacopini theorem
  *     this is always possible and preserves the behaviour exactly.
+ *
+ * Fidelity (same idea as Recast's reprinting, adapted to a flow graph): the
+ * builder keeps the original code, and every compound statement remembers a
+ * signature of the code it produced. A statement whose signature is unchanged
+ * is printed back exactly as it was written (formatting and comments inside
+ * included); only the parts of the flow that were edited are regenerated.
+ * Comments between statements travel with their statement (see `notes`).
  */
 
 const { indexGraph, isNormalEdge, isEmbeddedUnit } = require('./graph');
+const { KEEP, templateLines } = require('./text');
+const { scanTopLevel, splitTopLevel, patternNames, parseDeclaration, parseForHeader, identifiers } = require('./lowering');
 
 class UnstructuredError extends Error {}
 
@@ -25,6 +34,58 @@ const TERMINAL_KINDS = new Set(['end', 'return', 'throw']);
 /* ------------------------------------------------------------------------- */
 /* Small helpers                                                              */
 /* ------------------------------------------------------------------------- */
+
+/** 53-bit string hash (cyrb53): signatures must be computable in the webview too. */
+function hash(text) {
+    let h1 = 0xdeadbeef;
+    let h2 = 0x41c6ce57;
+    for (let i = 0; i < text.length; i++) {
+        const ch = text.charCodeAt(i);
+        h1 = Math.imul(h1 ^ ch, 2654435761);
+        h2 = Math.imul(h2 ^ ch, 1597334677);
+    }
+    h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+    h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+    return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/** Whitespace before `offset` on its line, when nothing else precedes it. */
+function indentAt(source, offset) {
+    const lineStart = source.lastIndexOf('\n', offset - 1) + 1;
+    const prefix = source.slice(lineStart, offset);
+    return /^[ \t]*$/.test(prefix) ? prefix : undefined;
+}
+
+const SIGNATURE_META = new Set(['sig', 'span', 'ids', 'folds', 'exits', 'endId', 'exitId']);
+
+/**
+ * Signature of an embedded flow (inline callback, nested function): its nodes,
+ * edges and the embedded flows it holds itself. A flow whose signature differs
+ * from the one recorded when the diagram was built has been edited.
+ */
+function unitSignature(graph, index, cache = new Map()) {
+    if (cache.has(index)) return cache.get(index);
+    cache.set(index, '');
+    const nodes = graph.nodes.filter((n) => n.unit === index);
+    const ids = new Set(nodes.map((n) => n.id));
+    const parts = nodes.map((n) => {
+        const meta = Object.fromEntries(Object.entries(n.meta || {}).filter(([k]) => !SIGNATURE_META.has(k)));
+        return JSON.stringify([n.id, n.kind, n.code, meta, n.comments || null]);
+    });
+    for (const e of graph.edges) {
+        if (ids.has(e.from)) parts.push(JSON.stringify([e.from, e.to, e.label, e.kind || '', e.code === undefined ? null : e.code]));
+    }
+    for (const child of hostedUnits(graph, ids)) parts.push(`u${unitSignature(graph, child, cache)}`);
+    const result = hash(parts.join('\n'));
+    cache.set(index, result);
+    return result;
+}
+
+/** Indices of the embedded flows held by the nodes `ids`. */
+function hostedUnits(graph, ids) {
+    const starts = new Set(graph.edges.filter((e) => e.kind === 'callback' && ids.has(e.from)).map((e) => e.to));
+    return graph.units.map((u, i) => (starts.has(u.startId) ? i : -1)).filter((i) => i >= 0);
+}
 
 function withSemicolon(code) {
     const text = String(code).trimEnd();
@@ -36,6 +97,8 @@ function withSemicolon(code) {
 
 function negate(condition) {
     const text = condition.trim();
+    // !x → x, !obj.prop → obj.prop, !f(a) → f(a)
+    if (/^![\w$.]+(\([^()]*\))?$/.test(text)) return text.slice(1);
     if (/^!\s*\(.*\)$/s.test(text) && balanced(text.replace(/^!\s*/, ''))) return text.replace(/^!\s*\((.*)\)$/s, '$1');
     if (/^[\w$.]+$/.test(text)) return `!${text}`;
     return `!(${text})`;
@@ -219,10 +282,73 @@ class StructuredEmitter {
         this.flow = buildFlow(graph, unitIndex);
         this.labelCounter = 0;
         this.warnings = [];
+        this.indentUnit = '    ';
+        this.unitSigs = new Map();
+        this.embeddedSigs = new Map();
+        /** Node id ranges printed verbatim (their hoisted declarations are already in the text). */
+        this.covered = [];
     }
 
     node(id) {
         return this.flow.nodes.get(id);
+    }
+
+    /** Links an emitted statement to the node (and code line) it comes from. */
+    tag(item, node, line = 0) {
+        item.from = node.id;
+        item.line = line;
+        const notes = node.comments && node.comments[line];
+        if (notes) item.notes = notes;
+        const source = this.graph.source;
+        const raw = node.code && node.code[line];
+        if (typeof source === 'string' && node.start !== undefined && typeof raw === 'string' && raw) {
+            const at = source.indexOf(raw, node.start);
+            if (at >= 0 && at <= node.end) item.indent = indentAt(source, at);
+        }
+        return item;
+    }
+
+    /** Signature of the embedded flows held by a node. */
+    embeddedSignature(id) {
+        if (!this.embeddedSigs.has(id)) {
+            const units = hostedUnits(this.graph, new Set([id]));
+            this.embeddedSigs.set(id, units.map((u) => unitSignature(this.graph, u, this.unitSigs)).join(','));
+        }
+        return this.embeddedSigs.get(id);
+    }
+
+    /**
+     * Text of a node field with the edited embedded flows spliced back in:
+     * the body of a callback whose flow changed is regenerated from that flow.
+     */
+    hosted(node, field, line, text) {
+        if (typeof text !== 'string') return text;
+        const edits = [];
+        this.graph.units.forEach((unit, index) => {
+            const host = unit.host;
+            if (!host || host.nodeId !== node.id || host.field !== field || host.line !== line || !unit.sig) return;
+            if (unitSignature(this.graph, index, this.unitSigs) === unit.sig) return;
+            edits.push({ unit, index, range: host.range });
+        });
+        if (!edits.length) return text;
+        edits.sort((a, b) => b.range[0] - a.range[0]);
+        let result = text;
+        const base = (this.graph.source && node.start !== undefined && indentAt(this.graph.source, node.start)) || '';
+        for (const edit of edits) {
+            const [start, end] = edit.range;
+            if (start < 0 || end > result.length || start > end) continue;
+            const lineStart = result.lastIndexOf('\n', start - 1) + 1;
+            const pad = lineStart === 0 ? base : result.slice(lineStart).match(/^[ \t]*/)[0];
+            // `(x) => expression` stays concise while its flow is a single return.
+            const concise = edit.unit.host.expression ? singleReturn(this.graph, edit.index) : null;
+            if (concise !== null) {
+                result = `${result.slice(0, start)}${/^\s*\{/.test(concise) ? `(${concise})` : concise}${result.slice(end)}`;
+                continue;
+            }
+            const lines = bodyLines(this.graph, edit.index, this.indentUnit).map((l) => indentLine(l, pad + this.indentUnit));
+            result = `${result.slice(0, start)}{\n${lines.join('\n')}${lines.length ? '\n' : ''}${pad}}${result.slice(end)}`;
+        }
+        return result;
     }
 
     outEdges(id) {
@@ -252,13 +378,23 @@ class StructuredEmitter {
         // Inside a loop, a merge point must be in the loop body, or a path that only returns / throws.
         const inScope = (m) => !loop || loop.body.has(m) || m === loop.continueTarget || this.endsInTerminal(m);
         const merge = this.flow.ipd(id);
-        if (merge && inScope(merge) && this.reachableWithin(id, merge, ctx)) return merge;
+        const valid = merge && inScope(merge) && this.reachableWithin(id, merge, ctx);
+        // The post-dominator is the loop header when some branches `continue`: the branches
+        // usually meet earlier, and only the others jump back (no code is duplicated).
+        if (valid && !(loop && merge === loop.continueTarget)) return merge;
+        const earlier = this.convergence(id, ctx, inScope);
+        return earlier || (valid ? merge : null);
+    }
 
+    /** Earliest node where at least two branches of `id` meet, without crossing an enclosing stop. */
+    convergence(id, ctx, inScope) {
         const blockers = new Set([...ctx.stops, id]);
+        const jumpTargets = new Set();
         for (const j of ctx.jumps) {
-            if (j.continueTarget) blockers.add(j.continueTarget);
-            if (j.exit) blockers.add(j.exit);
+            if (j.continueTarget) jumpTargets.add(j.continueTarget);
+            if (j.exit) jumpTargets.add(j.exit);
         }
+        jumpTargets.forEach((t) => blockers.add(t));
         const branches = [...new Set(this.flow.succ.get(id) || [])];
         const counts = new Map();
         for (const branch of branches) {
@@ -274,7 +410,8 @@ class StructuredEmitter {
             }
             seen.forEach((n) => counts.set(n, (counts.get(n) || 0) + 1));
         }
-        const candidates = [...counts].filter(([n, c]) => c >= 2 && inScope(n)).map(([n]) => n);
+        // Branches that meet at the header or the exit of an enclosing loop are written with continue / break.
+        const candidates = [...counts].filter(([n, c]) => c >= 2 && inScope(n) && !jumpTargets.has(n)).map(([n]) => n);
         if (!candidates.length) return null;
         candidates.sort((a, b) => (this.flow.rpo.get(a) ?? 0) - (this.flow.rpo.get(b) ?? 0));
         // The first meeting point is the candidate from which every other one is reached.
@@ -349,8 +486,13 @@ class StructuredEmitter {
                 if (s !== header && !body.has(s)) exits.add(s);
             }
         }
-        if (exits.size <= 1) return exits.size ? [...exits][0] : null;
         const hint = hintNode && hintNode.meta && hintNode.meta.exitId;
+        if (exits.size <= 1) {
+            const only = exits.size ? [...exits][0] : null;
+            // `for (;;) { … return; }`: the return stays in the loop, it is not reached by a break.
+            if (only && hint !== only && hintNode && hintNode.meta && hintNode.meta.exitId === undefined && this.endsInTerminal(only)) return null;
+            return only;
+        }
         if (hint && exits.has(hint)) return hint;
         const nonTerminal = [...exits].filter((e) => !this.endsInTerminal(e));
         if (nonTerminal.length === 1) return nonTerminal[0];
@@ -399,22 +541,21 @@ class StructuredEmitter {
                 case 'end':
                     return { body, stoppedAt: null };
                 case 'process':
-                    for (const line of node.code || []) {
-                        if (!String(line).trim()) continue;
-                        body.push(node.meta && node.meta.multiline
-                            ? { t: 'raw', text: withSemicolon(line) }
-                            : { t: 'code', text: withSemicolon(line) });
-                    }
+                    (node.code || []).forEach((line, i) => {
+                        if (!String(line).trim()) return;
+                        const text = withSemicolon(this.hosted(node, 'code', i, line));
+                        body.push(this.tag(node.meta && node.meta.multiline ? { t: 'raw', text } : { t: 'code', text }, node, i));
+                    });
                     if (ctx.stopAfter && ctx.stopAfter.has(cur)) {
                         return { body, stoppedAt: this.singleSuccessor(cur) || null, stoppedAfter: true };
                     }
                     cur = this.singleSuccessor(cur);
                     break;
                 case 'return':
-                    body.push({ t: 'return', text: withSemicolon(node.code[0] || 'return') });
+                    body.push(this.tag({ t: 'return', text: withSemicolon(this.hosted(node, 'code', 0, node.code[0]) || 'return') }, node));
                     return { body, stoppedAt: null };
                 case 'throw':
-                    body.push({ t: 'throw', text: withSemicolon(node.code[0] || 'throw new Error()') });
+                    body.push(this.tag({ t: 'throw', text: withSemicolon(this.hosted(node, 'code', 0, node.code[0]) || 'throw new Error()') }, node));
                     return { body, stoppedAt: null };
                 case 'decision':
                     cur = node.meta && node.meta.subtype === 'switch'
@@ -463,6 +604,13 @@ class StructuredEmitter {
         return null;
     }
 
+    /** The label written in the source (`outer: for …`), or a generated one. */
+    labelFor(node, prefix) {
+        const labels = node && node.meta && node.meta.labels;
+        if (Array.isArray(labels) && labels.length && /^[A-Za-z_$][\w$]*$/.test(labels[0])) return labels[0];
+        return `${prefix}${++this.labelCounter}`;
+    }
+
     withVisiting(ctx, id) {
         return { ...ctx, visiting: new Set([...ctx.visiting, id]) };
     }
@@ -473,17 +621,54 @@ class StructuredEmitter {
         const no = this.edgeTo(id, ['no', 'false']);
         if (!yes || !no) throw new UnstructuredError(`Condition ${id} needs a "yes" and a "no" branch.`);
 
+        const inner = this.withVisiting(ctx, id);
+        // A guard (`if (c) { …; continue; }`) keeps its shape: the code after it is not moved into an else.
+        if (node.meta && node.meta.guard) {
+            const guarded = this.tryRegion(yes, new Set(ctx.stops), inner);
+            const jump = guarded && guarded.stoppedAt !== null ? this.jumpTo(guarded.stoppedAt, { ...ctx, stops: new Set() }) : null;
+            if (jump) {
+                guarded.body.push(jump);
+                guarded.stoppedAt = null;
+            }
+            if (guarded && guarded.stoppedAt === null && endsWithJump(guarded.body)) {
+                body.push(this.ifItem(node, guarded.body, []));
+                return no;
+            }
+        }
+
         const merge = this.mergePoint(id, ctx);
         const stops = new Set(ctx.stops);
         if (merge) stops.add(merge);
-        const inner = this.withVisiting(ctx, id);
 
         const thenRegion = this.region(yes, stops, inner);
         const elseRegion = this.region(no, stops, inner);
         const next = this.resolveEnds([thenRegion, elseRegion], merge, ctx);
 
-        body.push({ t: 'if', cond: node.code[0] || 'true', then: thenRegion.body, else: elseRegion.body });
+        body.push(this.ifItem(node, thenRegion.body, elseRegion.body));
         return next;
+    }
+
+    /** Region that may not be structurable: null instead of an error (the caller has another way). */
+    tryRegion(entry, stops, ctx) {
+        const saved = this.labelCounter;
+        try {
+            return this.region(entry, stops, ctx);
+        } catch (error) {
+            if (!(error instanceof UnstructuredError)) throw error;
+            this.labelCounter = saved;
+            return null;
+        }
+    }
+
+    ifItem(node, thenBody, elseBody) {
+        const item = this.tag({ t: 'if', cond: this.hosted(node, 'code', 0, node.code[0]) || 'true', then: thenBody, else: elseBody }, node);
+        const source = this.graph.source;
+        const head = node.meta && node.meta.head;
+        if (head && typeof source === 'string' && node.start !== undefined && item.cond === source.slice(node.start, node.end)) {
+            item.headText = source.slice(head[0], head[1]).trimEnd();
+            item.headIndent = indentAt(source, head[0]);
+        }
+        return item;
     }
 
     /**
@@ -538,7 +723,7 @@ class StructuredEmitter {
             continueTarget: id,
             exit,
             body: loopNodes,
-            label: `loop${++this.labelCounter}`,
+            label: this.labelFor(node, 'loop'),
             usedLabel: false
         };
         const inner = { ...this.withVisiting(ctx, id), jumps: [...ctx.jumps, jump], stops: new Set([id]) };
@@ -548,11 +733,16 @@ class StructuredEmitter {
         const meta = node.meta || {};
         let head;
         if (meta.subtype === 'for' || meta.subtype === 'forin' || meta.subtype === 'forof') {
-            head = meta.header;
+            head = this.hosted(node, 'header', 0, meta.header);
         } else {
-            head = `while (${(node.code[0] || 'true').trim() || 'true'})`;
+            head = `while (${(this.hosted(node, 'code', 0, node.code[0]) || 'true').trim() || 'true'})`;
+            // The header as written (several lines, comments) while the condition is unchanged.
+            const squash = (t) => String(t).replace(/\s+/g, '');
+            if (meta.header && squash(meta.header) === squash(head)) head = meta.header;
         }
-        body.push({ t: 'loop', head, body: region.body, label: jump.usedLabel ? jump.label : undefined });
+        const item = this.tag({ t: 'loop', head, body: region.body, label: jump.usedLabel ? jump.label : undefined }, node);
+        if (typeof this.graph.source === 'string' && node.start !== undefined) item.headIndent = indentAt(this.graph.source, node.start);
+        body.push(item);
         return exit || undefined;
     }
 
@@ -572,13 +762,14 @@ class StructuredEmitter {
             continueTarget: test,
             exit,
             body: doBody,
-            label: `loop${++this.labelCounter}`,
+            label: this.labelFor(this.node(id), 'loop'),
             usedLabel: false
         };
         const inner = { ...this.withVisiting(ctx, id), jumps: [...ctx.jumps, jump], stops: new Set([test]) };
         const region = entry === test ? { body: [], stoppedAt: test } : this.region(entry, inner.stops, inner);
         if (region.stoppedAt !== null && region.stoppedAt !== test) throw new UnstructuredError('do…while body leaves the loop.');
-        body.push({ t: 'do', cond: this.node(test).code[0] || 'true', body: region.body, label: jump.usedLabel ? jump.label : undefined });
+        const testNode = this.node(test);
+        body.push(this.tag({ t: 'do', cond: this.hosted(testNode, 'code', 0, testNode.code[0]) || 'true', body: region.body, label: jump.usedLabel ? jump.label : undefined }, this.node(id)));
         return exit || undefined;
     }
 
@@ -616,7 +807,7 @@ class StructuredEmitter {
             groups.sort((a, b) => rank(a.tests[0]) - rank(b.tests[0]));
         }
 
-        const jump = { type: 'switch', exit: merge, label: `switch${++this.labelCounter}`, usedLabel: false };
+        const jump = { type: 'switch', exit: merge, label: this.labelFor(node, 'switch'), usedLabel: false };
         const targets = new Set(groups.map((g) => g.target));
         const inner = { ...this.withVisiting(ctx, id), jumps: [...ctx.jumps, jump] };
         const cases = [];
@@ -649,7 +840,7 @@ class StructuredEmitter {
             cases.push({ tests: group.tests, body: region.body });
         });
 
-        body.push({ t: 'switch', disc: node.code[0] || 'undefined', cases, label: jump.usedLabel ? jump.label : undefined });
+        body.push(this.tag({ t: 'switch', disc: this.hosted(node, 'code', 0, node.code[0]) || 'undefined', cases, label: jump.usedLabel ? jump.label : undefined }, node));
         return merge || undefined;
     }
 
@@ -680,7 +871,7 @@ class StructuredEmitter {
         const next = this.resolveEnds(regions, merge, ctx);
 
         if (!finallyId) {
-            body.push({ t: 'try', block: block.body, handler, finalizer: null });
+            body.push(this.tag({ t: 'try', block: block.body, handler, finalizer: null }, node));
             return next;
         }
 
@@ -694,13 +885,13 @@ class StructuredEmitter {
                 : this.region(first, new Set([...ctx.stops, endId]), this.withVisiting(inner, finallyId));
             const after = region.stoppedAt === endId ? this.singleSuccessor(endId) : undefined;
             if (region.stoppedAt !== null && region.stoppedAt !== endId) region.body.push(this.jumpTo(region.stoppedAt, { ...ctx, stops: new Set() }) || (() => { throw new UnstructuredError('finally leaves its block.'); })());
-            body.push({ t: 'try', block: block.body, handler, finalizer: region.body });
+            body.push(this.tag({ t: 'try', block: block.body, handler, finalizer: region.body }, node));
             return after;
         }
         if (!finallyNode.meta || finallyNode.meta.exits === undefined) {
             // A finally with no recorded end never completes normally (it returns / throws).
             const region = this.region(this.singleSuccessor(finallyId), new Set(ctx.stops), this.withVisiting(inner, finallyId));
-            body.push({ t: 'try', block: block.body, handler, finalizer: region.body });
+            body.push(this.tag({ t: 'try', block: block.body, handler, finalizer: region.body }, node));
             return undefined;
         }
         const exits = finallyNode.meta.exits;
@@ -722,25 +913,124 @@ class StructuredEmitter {
         } else {
             throw new UnstructuredError('The end of the finally block cannot be determined.');
         }
-        body.push({ t: 'try', block: block.body, handler, finalizer });
+        body.push(this.tag({ t: 'try', block: block.body, handler, finalizer }, node));
         return after;
     }
 
-    emitUnit() {
+    /**
+     * @param {{ verbatim?: boolean }} [options] verbatim: print unchanged statements as written
+     */
+    emitUnit(options = {}) {
         const { unit } = this.flow;
         const ctx = { jumps: [], stops: new Set(), visiting: new Set() };
         const region = this.region(unit.startId, new Set(), ctx);
         const index = this.graph.units.indexOf(unit);
-        const notReached = this.graph.nodes.filter((n) => n.unit === index && !this.flow.reachable.has(n.id) && n.kind !== 'end');
+        let body = applyScopes(cleanup(region.body), 0);
+        if (options.verbatim) body = this.applyVerbatim(body);
+        const inCovered = (n) => {
+            const k = nodeIndex(n.id);
+            return this.covered.some(([lo, hi]) => k >= lo && k < hi);
+        };
+        const notReached = this.graph.nodes.filter((n) => n.unit === index && !this.flow.reachable.has(n.id) && n.kind !== 'end' && !inCovered(n));
         // Function declarations placed after a return are hoisted: they still belong to the code.
         const hoisted = notReached.filter((n) => n.meta && n.meta.declaration);
         const unreachable = notReached.filter((n) => !(n.meta && n.meta.declaration));
         if (unreachable.length) {
             this.warnings.push(`${unreachable.length} unreachable node(s) in "${unit.name}" were not converted.`);
         }
-        const body = applyScopes(cleanup(region.body), 0);
-        hoisted.forEach((n) => (n.code || []).forEach((c) => body.push({ t: 'code', text: withSemicolon(c), scope: [] })));
+        hoisted.forEach((n) => (n.code || []).forEach((c, i) => body.push(this.tag({ t: 'code', text: withSemicolon(c), scope: [] }, n, i))));
         return body;
+    }
+
+    /** Replaces the compound statements whose signature is unchanged by their original text. */
+    applyVerbatim(body) {
+        const source = this.graph.source;
+        if (typeof source !== 'string') return body;
+        const visit = (list) => list.map((stmt) => {
+            const node = stmt.from && this.node(stmt.from);
+            const meta = node && node.meta;
+            if (meta && meta.sig && meta.span && COMPOUND.has(stmt.t) && stmt.line === 0) {
+                const sig = this.signature(stmt);
+                if (sig && sig.hash === meta.sig) {
+                    if (meta.ids) this.covered.push(meta.ids);
+                    return {
+                        t: 'verbatim',
+                        text: source.slice(meta.span[0], meta.span[1]),
+                        indent: indentAt(source, meta.span[0]),
+                        notes: stmt.notes,
+                        scope: stmt.scope,
+                        from: stmt.from,
+                        line: 0
+                    };
+                }
+            }
+            forEachChildList(stmt, visit);
+            return stmt;
+        });
+        return visit(body);
+    }
+
+    /**
+     * Signature of an emitted statement: its kind, texts, source nodes, comments,
+     * embedded flows and children, with generated label names normalised.
+     * @returns {{ hash: string, froms: Set<string>, free: Set<string> } | null}
+     */
+    signature(stmt) {
+        const froms = new Set();
+        const free = new Set();
+        const walk = (s, labels) => {
+            const parts = [s.t];
+            if (s.from) {
+                froms.add(s.from);
+                parts.push(s.from, s.line || 0, this.embeddedSignature(s.from));
+            }
+            if (s.notes) parts.push(JSON.stringify(s.notes));
+            let inner = labels;
+            if (s.label && (s.t === 'loop' || s.t === 'do' || s.t === 'switch')) {
+                inner = new Map(labels);
+                inner.set(s.label, `L${labels.size}`);
+                parts.push(`label:${inner.get(s.label)}`);
+            } else if (s.label) {
+                if (labels.has(s.label)) parts.push(`to:${labels.get(s.label)}`);
+                else free.add(s.label);
+            }
+            for (const key of ['text', 'cond', 'head', 'disc']) if (s[key] !== undefined) parts.push(`${key}=${s[key]}`);
+            const list = (items) => `[${items.map((c) => walk(c, inner)).join(',')}]`;
+            if (s.t === 'if') parts.push(list(s.then), list(s.else));
+            if (s.t === 'loop' || s.t === 'do' || s.t === 'block') parts.push(list(s.body));
+            if (s.t === 'switch') s.cases.forEach((c) => parts.push(JSON.stringify(c.tests), list(c.body)));
+            if (s.t === 'try') {
+                parts.push(list(s.block));
+                parts.push(s.handler ? `catch(${s.handler.param})${list(s.handler.body)}` : 'nocatch');
+                parts.push(s.finalizer ? list(s.finalizer) : 'nofinally');
+            }
+            return hash(parts.join('\u0001'));
+        };
+        const result = walk(stmt, new Map());
+        return { hash: result, froms, free };
+    }
+}
+
+const COMPOUND = new Set(['if', 'loop', 'do', 'switch', 'try']);
+
+function nodeIndex(id) {
+    const match = /^n(\d+)$/.exec(String(id));
+    return match ? Number(match[1]) : -1;
+}
+
+/** Calls `fn(list)` for each child statement list of `stmt` and stores its result. */
+function forEachChildList(stmt, fn) {
+    if (stmt.t === 'if') {
+        stmt.then = fn(stmt.then);
+        stmt.else = fn(stmt.else);
+    } else if (stmt.t === 'loop' || stmt.t === 'do' || stmt.t === 'block') {
+        stmt.body = fn(stmt.body);
+    } else if (stmt.t === 'switch') {
+        stmt.cases.forEach((c) => { c.body = fn(c.body); });
+    } else if (stmt.t === 'try') {
+        stmt.block = fn(stmt.block);
+        if (stmt.handler) stmt.handler.body = fn(stmt.handler.body);
+        if (stmt.finalizer) stmt.finalizer = fn(stmt.finalizer);
     }
 }
 
@@ -801,6 +1091,7 @@ function cleanup(body, inLoopTail = false) {
             stmt.else = cleanup(stmt.else, inLoopTail && isLast);
             if (stmt.then.length === 0 && stmt.else.length > 0) {
                 stmt.cond = negate(stmt.cond);
+                delete stmt.headText;
                 stmt.then = stmt.else;
                 stmt.else = [];
             }
@@ -840,31 +1131,80 @@ function declaresLexically(stmt) {
         && !/^\s*(?:const|let)\s*=/.test(stmt.text);
 }
 
-function reindent(text, pad) {
+/** Lines that must not be re-indented: inside a template literal, or already final. */
+function frozenLines(lines) {
+    const keep = templateLines(lines.join('\n'));
+    lines.forEach((l, i) => { if (l.startsWith(KEEP)) keep.add(i); });
+    return keep;
+}
+
+function freeze(line) {
+    return line.startsWith(KEEP) ? line : KEEP + line;
+}
+
+function reindent(text, pad, original) {
     const lines = String(text).replace(/\r\n/g, '\n').split('\n');
     if (lines.length === 1) return [pad + lines[0].trim()];
+    const keep = frozenLines(lines);
+    // The statement comes from the source and we know where it started: shift it exactly.
+    if (typeof original === 'string' && lines.slice(1).every((l, i) => keep.has(i + 1) || !l.trim() || l.startsWith(original))) {
+        return [pad + lines[0].trim(), ...lines.slice(1).map((l, i) => {
+            if (keep.has(i + 1)) return freeze(l);
+            return (l.trim() ? pad + l.slice(original.length) : '').replace(/\s+$/, '');
+        })];
+    }
     // Keep the relative indentation of multi-line statements. The first line lost its
     // indentation when it was extracted; when the statement ends with a closing line
     // (`});`, `]`, `}`), that line has the original indentation of the statement.
-    const rest = lines.slice(1).filter((l) => l.trim());
+    const rest = lines.slice(1).filter((l, i) => l.trim() && !keep.has(i + 1));
     const indentOf = (l) => l.match(/^\s*/)[0].length;
     const common = rest.length ? Math.min(...rest.map(indentOf)) : 0;
     const last = rest[rest.length - 1] || '';
     const closes = /^\s*[}\])]/.test(last) && indentOf(last) === common;
     const extra = closes ? '' : '    ';
-    return [pad + lines[0].trim(), ...lines.slice(1).map((l) => (l.trim() ? pad + extra + l.slice(common) : ''))]
-        .map((l) => l.replace(/\s+$/, ''));
+    return [pad + lines[0].trim(), ...lines.slice(1).map((l, i) => {
+        if (keep.has(i + 1)) return freeze(l);
+        return (l.trim() ? pad + extra + l.slice(common) : '').replace(/\s+$/, '');
+    })];
+}
+
+/** Lines of a comment, aligned on `pad` (the inner lines of `/** … *\/` keep their star column). */
+function commentLines(comment, pad) {
+    const lines = String(comment).replace(/\r\n/g, '\n').split('\n');
+    return lines.map((l, i) => {
+        const trimmed = l.trim();
+        if (i === 0) return pad + trimmed;
+        return trimmed.startsWith('*') ? `${pad} ${trimmed}` : pad + trimmed;
+    });
 }
 
 function print(body, indent, unit) {
     const pad = unit.repeat(indent);
     const lines = [];
-    for (const stmt of body) {
+    body.forEach((stmt, index) => {
+        const notes = stmt.notes;
+        if (notes) {
+            if (notes.blank && index > 0) lines.push('');
+            (notes.lead || []).forEach((c) => lines.push(...commentLines(c, pad)));
+        }
+        const before = lines.length;
+        printStatement(stmt, lines, pad, indent, unit);
+        if (notes) {
+            if (notes.tail && lines.length > before) lines[lines.length - 1] += ` ${notes.tail}`;
+            (notes.after || []).forEach((c) => lines.push(...commentLines(c, pad)));
+        }
+    });
+    return lines;
+}
+
+function printStatement(stmt, lines, pad, indent, unit) {
+    {
         switch (stmt.t) {
             case 'code':
             case 'return':
             case 'throw':
-                lines.push(...reindent(stmt.text, pad));
+            case 'verbatim':
+                lines.push(...reindent(stmt.text, pad, stmt.indent));
                 break;
             case 'break':
             case 'continue':
@@ -873,18 +1213,28 @@ function print(body, indent, unit) {
             case 'raw': {
                 // User-written block: keep its relative indentation.
                 const rawLines = String(stmt.text).replace(/\r\n/g, '\n').split('\n');
-                const filled = rawLines.filter((l) => l.trim());
+                const keep = frozenLines(rawLines);
+                const filled = rawLines.filter((l, i) => l.trim() && !keep.has(i));
                 const common = filled.length ? Math.min(...filled.map((l) => l.match(/^\s*/)[0].length)) : 0;
-                rawLines.forEach((l) => lines.push(l.trim() ? `${pad}${l.slice(common).trimEnd()}` : ''));
+                rawLines.forEach((l, i) => {
+                    if (keep.has(i)) lines.push(freeze(l));
+                    else lines.push(l.trim() ? `${pad}${l.slice(common).trimEnd()}` : '');
+                });
                 break;
             }
             case 'if': {
-                lines.push(`${pad}if (${stmt.cond.trim()}) {`);
+                const opening = (s, prefix) => {
+                    if (!s.headText) return [`${pad}${prefix}if (${s.cond.trim()}) {`];
+                    const head = reindent(`${s.headText} {`, pad, s.headIndent);
+                    head[0] = pad + prefix + head[0].trimStart();
+                    return head;
+                };
+                lines.push(...opening(stmt, ''));
                 lines.push(...print(stmt.then, indent + 1, unit));
                 let elseBody = stmt.else;
-                while (elseBody.length === 1 && elseBody[0].t === 'if') {
+                while (elseBody.length === 1 && elseBody[0].t === 'if' && !elseBody[0].notes) {
                     const nested = elseBody[0];
-                    lines.push(`${pad}} else if (${nested.cond.trim()}) {`);
+                    lines.push(...opening(nested, '} else '));
                     lines.push(...print(nested.then, indent + 1, unit));
                     elseBody = nested.else;
                 }
@@ -900,11 +1250,14 @@ function print(body, indent, unit) {
                 lines.push(...print(stmt.body, indent + 1, unit));
                 lines.push(`${pad}}`);
                 break;
-            case 'loop':
-                lines.push(`${pad}${stmt.label ? `${stmt.label}: ` : ''}${stmt.head.trim()} {`);
+            case 'loop': {
+                const head = reindent(`${stmt.head.trim()} {`, pad, stmt.headIndent);
+                head[0] = `${pad}${stmt.label ? `${stmt.label}: ` : ''}${head[0].trimStart()}`;
+                lines.push(...head);
                 lines.push(...print(stmt.body, indent + 1, unit));
                 lines.push(`${pad}}`);
                 break;
+            }
             case 'do':
                 lines.push(`${pad}${stmt.label ? `${stmt.label}: ` : ''}do {`);
                 lines.push(...print(stmt.body, indent + 1, unit));
@@ -942,139 +1295,404 @@ function print(body, indent, unit) {
                 break;
         }
     }
-    return lines;
 }
 
 /* ------------------------------------------------------------------------- */
 /* State machine fallback                                                     */
 /* ------------------------------------------------------------------------- */
 
+/**
+ * Böhm–Jacopini fallback: any flow graph as `for (;;) { switch (state) … }`.
+ *
+ * Every node becomes a `case`; jumps assign the next state. What cannot be a
+ * plain case is lowered first:
+ *  - declarations are hoisted (`let a, b;` at the top) and become assignments,
+ *    destructuring included (`({ a, b } = obj);`), `let x;` resets x;
+ *  - `for (init; test; update)` gets an init and an update state, `for…of`
+ *    drives the iterator by hand (closed with `return()` when left early) and
+ *    `for…in` iterates over a snapshot of the keys, skipping deleted ones;
+ *  - try / catch / finally use a table of protected states, like the
+ *    exception tables of compiled code: the whole dispatcher runs in a `try`,
+ *    and its `catch` sends the error to the handler of the state that threw;
+ *    a `finally` remembers what it interrupted (error, return value or
+ *    target state) and resumes it at its end.
+ * @returns {{ lines: string[], warnings: string[] }}
+ */
 function stateMachine(graph, unitIndex, indentUnit) {
     const flow = buildFlow(graph, unitIndex);
-    const ids = [...flow.reachable];
-    const entry = (graph.units[unitIndex] && flow.succ.get(graph.units[unitIndex].startId)[0]) || null;
-    const lines = [];
+    const unit = graph.units[unitIndex];
+    const nodes = flow.nodes;
+    const startNode = nodes.get(unit.startId);
+    const startMeta = (startNode && startNode.meta) || {};
+    const ids = [...flow.reachable].filter((id) => !['start', 'end'].includes(nodes.get(id).kind));
+    const warnings = [];
     const pad = (n) => indentUnit.repeat(n);
-    const go = (target) => (!target || flow.nodes.get(target).kind === 'end' ? 'break flow;' : `state = '${target}'; continue flow;`);
-    const hoisted = [];
-    const hoist = (code) => {
+    const kindOf = (id) => (nodes.get(id) ? nodes.get(id).kind : 'end');
+
+    // Fresh names that cannot clash with the code of the function.
+    const used = new Set();
+    for (const n of graph.nodes) {
+        if (n.unit !== unitIndex) continue;
+        for (const c of n.code || []) identifiers(c).forEach((w) => used.add(w));
+        if (n.meta && n.meta.header) identifiers(n.meta.header).forEach((w) => used.add(w));
+    }
+    identifiers(startMeta.params || '').forEach((w) => used.add(w));
+    const fresh = (base) => {
+        let name = base;
+        for (let i = 2; used.has(name); i++) name = `${base}${i}`;
+        used.add(name);
+        return name;
+    };
+    const S = fresh('$state');
+    const FLOW = fresh('$flow');
+    const ERROR = fresh('$error');
+
+    const params = new Set(splitTopLevel(startMeta.params || '', ',').flatMap((p) => patternNames(p.replace(/^\s*\.\.\./, ''))));
+    const hoisted = new Set();
+    const declaredBy = new Map();
+    const hoist = (names, id) => names.forEach((name) => {
+        if (!params.has(name)) hoisted.add(name);
+        if (!declaredBy.has(name)) declaredBy.set(name, new Set());
+        declaredBy.get(name).add(id);
+    });
+    const assign = (target, value) => (/^[A-Za-z_$][\w$]*$/.test(target) ? `${target} = ${value}` : `(${target} = ${value})`);
+
+    /** A statement of the function as a statement of a `case`. */
+    const lower = (code, id) => {
         const text = String(code).trim();
-        const match = /^(const|let|var)\s+([\s\S]*?);?$/.exec(text);
-        if (!match) return text;
-        const declarators = splitTopLevel(match[2], ',');
-        const assignments = [];
-        for (const declarator of declarators) {
-            const m = /^([A-Za-z_$][\w$]*)\s*(?::[^=]+)?(?:=([\s\S]*))?$/.exec(declarator.trim());
-            if (!m) throw new Error(`Cannot convert "${text}" to a state machine (destructuring). Restructure the diagram.`);
-            hoisted.push(m[1]);
-            if (m[2] !== undefined) assignments.push(`${m[1]} = ${m[2].trim()}`);
+        if (/^export\b/.test(text)) throw new Error('Exported declarations cannot be moved into a state machine. Restructure the diagram.');
+        if (/^using\b|^await\s+using\b/.test(text)) throw new Error('`using` declarations cannot be moved into a state machine. Restructure the diagram.');
+        const declaration = parseDeclaration(text);
+        if (declaration) {
+            const parts = [];
+            for (const d of declaration.declarators) {
+                hoist(d.names, id);
+                if (d.init !== null) parts.push(assign(d.target, d.init));
+                else if (declaration.kind !== 'var') d.names.forEach((name) => parts.push(`${name} = undefined`));
+            }
+            return parts.length ? `${parts.join(', ')};` : '';
         }
-        return assignments.length ? `${assignments.join(', ')};` : '';
+        const cls = /^class\s+([A-Za-z_$][\w$]*)/.exec(text);
+        if (cls) {
+            hoist([cls[1]], id);
+            return `${cls[1]} = ${text.replace(/;$/, '')};`;
+        }
+        return text;
     };
 
-    // Function declarations are hoisted: emit them once, before the state machine.
-    const declarations = graph.nodes.filter((n) => n.unit === unitIndex && n.meta && n.meta.declaration);
-    declarations.forEach((n) => (n.code || []).forEach((c) => lines.push(...reindent(String(c), ''))));
-    lines.push(`let state = ${entry ? `'${entry}'` : 'null'};`);
-    lines.push('flow: while (state !== null) {');
-    lines.push(`${pad(1)}switch (state) {`);
+    /* ---- loops that need more than one state ---- */
+    // Dominators, to find the real back edges of a loop: `continue outer` reaches an inner
+    // loop header from outside, but that is not an iteration of the inner loop.
+    const preds = new Map(ids.map((id) => [id, []]));
+    for (const id of [unit.startId, ...ids]) for (const t of flow.succ.get(id) || []) if (preds.has(t)) preds.get(t).push(id);
+    const dom = new Map(ids.map((id) => [id, null]));
+    const all = new Set([unit.startId, ...ids]);
+    for (const id of ids) dom.set(id, new Set(all));
+    for (let changed = true; changed;) {
+        changed = false;
+        for (const id of ids) {
+            let set = null;
+            for (const p of preds.get(id)) {
+                const ps = p === unit.startId ? new Set([unit.startId]) : dom.get(p);
+                set = set === null ? new Set(ps) : new Set([...set].filter((x) => ps.has(x)));
+            }
+            set = set || new Set();
+            set.add(id);
+            if (set.size !== dom.get(id).size) {
+                dom.set(id, set);
+                changed = true;
+            }
+        }
+    }
+    const naturalLoop = (header) => {
+        const body = new Set();
+        const stack = preds.get(header).filter((p) => dom.get(p) && dom.get(p).has(header));
+        while (stack.length) {
+            const n = stack.pop();
+            if (n === header || body.has(n)) continue;
+            body.add(n);
+            preds.get(n).forEach((p) => stack.push(p));
+        }
+        return body;
+    };
+    const loops = new Map();
     for (const id of ids) {
-        const node = flow.nodes.get(id);
-        const edges = (flow.out.get(id) || []).filter((e) => flow.nodes.has(e.to));
-        const to = (labels) => {
-            const edge = edges.find((e) => labels.includes(e.label));
-            return edge ? edge.to : undefined;
+        const node = nodes.get(id);
+        const subtype = node.meta && node.meta.subtype;
+        if (node.kind !== 'loop' || !['for', 'forin', 'forof'].includes(subtype)) continue;
+        const header = parseForHeader(node.meta.header || '');
+        if (!header) throw new Error(`Cannot read the loop header "${node.meta.header}". Restructure the diagram.`);
+        const entryEdge = (flow.out.get(id) || []).find((e) => isNormalEdge(e) && ['yes', 'next', 'true'].includes(e.label));
+        const exitEdge = (flow.out.get(id) || []).find((e) => isNormalEdge(e) && ['no', 'done', 'false'].includes(e.label));
+        const body = entryEdge ? naturalLoop(id) : new Set();
+        const loop = { id, header, body, entry: entryEdge && entryEdge.to, exit: exitEdge && exitEdge.to };
+        if (header.kind === 'of') {
+            loop.iterator = fresh('$iterator');
+            loop.step = fresh('$step');
+        } else if (header.kind === 'in') {
+            loop.keys = fresh('$keys');
+            loop.object = fresh('$object');
+            loop.index = fresh('$index');
+        }
+        if (header.kind !== 'for') hoist(header.names, id);
+        loops.set(id, loop);
+    }
+
+    /* ---- protected regions (try / catch / finally) ---- */
+    const inSpan = (id, span) => {
+        const n = nodes.get(id);
+        return !!(n && span && n.start !== undefined && n.start >= span[0] && n.start < span[1]);
+    };
+    const regions = [];
+    const pending = new Map();
+    for (const id of ids) {
+        const node = nodes.get(id);
+        if (node.kind !== 'try') continue;
+        const meta = node.meta || {};
+        const finallyId = meta.finallyId && flow.reachable.has(meta.finallyId) ? meta.finallyId : null;
+        if (finallyId) pending.set(finallyId, fresh('$finally'));
+        if (meta.block) regions.push({ tryId: id, span: meta.block, stmt: meta.stmt, handler: meta.catchId || finallyId, finallyId });
+        if (meta.handlerBody && finallyId) regions.push({ tryId: id, span: meta.handlerBody, stmt: meta.stmt, handler: finallyId, finallyId });
+    }
+    const size = (span) => span[1] - span[0];
+    const innermost = (list) => list.sort((a, b) => size(a.span) - size(b.span))[0];
+    /** The catch / finally that receives an error thrown in state `id`. */
+    const handlerOf = (id) => {
+        const exception = (flow.out.get(id) || []).find((e) => e.kind === 'exception' && ['catch', 'finally'].includes(kindOf(e.to)));
+        if (exception) return exception.to;
+        const region = innermost(regions.filter((r) => inSpan(id, r.span)));
+        return region ? region.handler : null;
+    };
+
+    /* ---- jumps ---- */
+    const closeIterators = (from, target) => [...loops.values()]
+        .filter((l) => l.header.kind === 'of' && l.body.has(from) && !l.body.has(target) && target !== l.id)
+        .map((l) => `if (${l.iterator} && ${l.iterator}.return) ${l.iterator}.return();`);
+    const go = (target, from) => {
+        const prefix = closeIterators(from, target);
+        if (!target || kindOf(target) === 'end') return [...prefix, `break ${FLOW};`].join(' ');
+        let state = target;
+        const loop = loops.get(target);
+        if (loop) state = loop.body.has(from) ? (loop.header.kind === 'for' ? `${target}:next` : target) : `${target}:init`;
+        // Leaving a try that has a finally: the finally runs first, then resumes the jump.
+        const crossing = innermost(regions.filter((r) => r.finallyId && inSpan(from, r.span) && r.stmt && nodes.get(target).start !== undefined && !inSpan(target, r.stmt)));
+        if (crossing) return [...prefix, `${pending.get(crossing.finallyId)} = { state: '${state}' }; ${S} = '${crossing.finallyId}'; continue ${FLOW};`].join(' ');
+        return [...prefix, `${S} = '${state}'; continue ${FLOW};`].join(' ');
+    };
+    const normal = (id) => (flow.out.get(id) || []).filter((e) => isNormalEdge(e) && nodes.has(e.to));
+    const to = (id, labels) => (normal(id).find((e) => labels.includes(e.label)) || {}).to;
+    const next = (id) => (normal(id)[0] || {}).to;
+
+    /* ---- cases ---- */
+    const cases = [];
+    const addCase = (state, body) => cases.push({ state, body });
+    for (const id of ids) {
+        const node = nodes.get(id);
+        const body = [];
+        const emit = (code) => {
+            if (!String(code).trim()) return;
+            body.push(...reindent(withSemicolon(code), ''));
         };
-        if (node.kind === 'start' || node.kind === 'end') continue;
-        lines.push(`${pad(2)}case '${id}': {`);
-        const body = pad(3);
         switch (node.kind) {
             case 'process':
                 if (node.meta && node.meta.declaration) {
-                    lines.push(body + go(flow.succ.get(id)[0]));
+                    body.push(go(next(id), id));
                     break;
                 }
-                (node.code || []).flatMap((c) => (node.meta && node.meta.multiline ? splitTopLevel(String(c), '\n') : [c])).forEach((c) => {
-                    if (/^\s*\/\//.test(c)) {
-                        lines.push(body + String(c).trim());
-                        return;
-                    }
-                    const code = hoist(c);
-                    if (code.trim()) lines.push(...reindent(withSemicolon(code), body));
+                (node.code || []).flatMap((c) => (node.meta && node.meta.multiline ? splitStatements(String(c)) : [c])).forEach((c) => {
+                    if (/^\s*(\/\/|\/\*)/.test(c) && !/\n/.test(String(c).trim())) body.push(String(c).trim());
+                    else emit(lower(c, id));
                 });
-                lines.push(body + go(flow.succ.get(id)[0]));
+                body.push(go(next(id), id));
                 break;
             case 'junction':
-                lines.push(body + go(flow.succ.get(id)[0]));
+            case 'try':
+            case 'catch':
+            case 'finally':
+                if (node.kind === 'junction' && node.meta && node.meta.subtype === 'finallyEnd' && pending.has(node.meta.finallyId)) {
+                    const variable = pending.get(node.meta.finallyId);
+                    const outer = (flow.out.get(id) || []).find((e) => e.kind === 'abrupt' && e.label === 'then return' && kindOf(e.to) === 'finally');
+                    const resume = outer && pending.has(outer.to)
+                        ? `${pending.get(outer.to)} = p; ${S} = '${outer.to}'; continue ${FLOW};`
+                        : 'return p.value;';
+                    body.push(`if (${variable} !== undefined) {`);
+                    body.push(`${indentUnit}const p = ${variable};`);
+                    body.push(`${indentUnit}${variable} = undefined;`);
+                    body.push(`${indentUnit}if ('error' in p) throw p.error;`);
+                    body.push(`${indentUnit}if ('value' in p) { ${resume} }`);
+                    body.push(`${indentUnit}${S} = p.state;`);
+                    body.push(`${indentUnit}continue ${FLOW};`);
+                    body.push('}');
+                }
+                body.push(go(node.kind === 'try'
+                    ? (normal(id).find((e) => e.to !== (node.meta && node.meta.catchId)) || {}).to
+                    : next(id), id));
                 break;
-            case 'return':
+            case 'return': {
+                const text = String(node.code[0] || 'return').trim().replace(/;$/, '');
+                const value = text.replace(/^return\b/, '').trim();
+                const viaFinally = (flow.out.get(id) || []).find((e) => e.kind === 'abrupt' && kindOf(e.to) === 'finally' && pending.has(e.to));
+                const closing = closeIterators(id, null);
+                if (viaFinally) {
+                    body.push(...closing);
+                    body.push(`${pending.get(viaFinally.to)} = { value: ${value || 'undefined'} };`);
+                    body.push(`${S} = '${viaFinally.to}';`);
+                    body.push(`continue ${FLOW};`);
+                } else if (closing.length) {
+                    // The value is computed before the iterators are closed.
+                    const result = fresh('$result');
+                    body.push(`const ${result} = ${value || 'undefined'};`, ...closing, `return ${result};`);
+                } else {
+                    emit(text);
+                }
+                break;
+            }
             case 'throw':
-                lines.push(...reindent(withSemicolon(node.code[0] || node.kind), body));
+                emit(node.code[0] || 'throw new Error()');
                 break;
             case 'decision':
                 if (node.meta && node.meta.subtype === 'switch') {
-                    lines.push(`${body}switch (${node.code[0]}) {`);
-                    for (const edge of edges) {
-                        if (edge.code !== undefined && edge.code !== null) lines.push(`${body}${indentUnit}case ${edge.code}: ${go(edge.to)}`);
+                    body.push(`switch (${node.code[0]}) {`);
+                    for (const edge of normal(id)) {
+                        if (edge.code !== undefined && edge.code !== null) body.push(`${indentUnit}case ${edge.code}: ${go(edge.to, id)}`);
                     }
-                    const fallback = edges.find((e) => e.label === 'default' || e.label === 'no match');
-                    lines.push(`${body}${indentUnit}default: ${fallback ? go(fallback.to) : 'break flow;'}`);
-                    lines.push(`${body}}`);
+                    const fallback = normal(id).find((e) => e.label === 'default' || e.label === 'no match');
+                    body.push(`${indentUnit}default: ${go(fallback && fallback.to, id)}`);
+                    body.push('}');
                     break;
                 }
-                lines.push(`${body}if (${node.code[0]}) { ${go(to(['yes', 'true']))} }`);
-                lines.push(body + go(to(['no', 'false'])));
+                body.push(`if (${node.code[0]}) { ${go(to(id, ['yes', 'true']), id)} }`);
+                body.push(go(to(id, ['no', 'false']), id));
                 break;
             case 'loop': {
-                const subtype = node.meta && node.meta.subtype;
-                if (subtype === 'for' || subtype === 'forin' || subtype === 'forof') {
-                    throw new Error(`The diagram is not structured and contains a "${node.meta.header}" loop, which cannot be expressed as a state machine. Use a while loop or restructure the diagram.`);
+                const loop = loops.get(id);
+                const enter = to(id, ['yes', 'next', 'true']);
+                const leave = to(id, ['no', 'done', 'false']);
+                if (!loop) {
+                    body.push(`if (${node.code[0] || 'true'}) { ${go(enter, id)} }`);
+                    body.push(go(leave, id));
+                    break;
                 }
-                lines.push(`${body}if (${node.code[0] || 'true'}) { ${go(to(['yes', 'next', 'true']))} }`);
-                lines.push(body + go(to(['no', 'done', 'false'])));
+                const { header } = loop;
+                if (header.kind === 'for') {
+                    addCase(`${id}:init`, [...(header.init ? reindent(withSemicolon(lower(header.init, id) || ''), '') : []).filter((l) => l.trim() && l.trim() !== ';'), `${S} = '${id}'; continue ${FLOW};`]);
+                    body.push(`if (${header.test || 'true'}) { ${go(enter, id)} }`);
+                    body.push(go(leave, id));
+                    if (header.update) addCase(`${id}:next`, [...reindent(withSemicolon(header.update), ''), `${S} = '${id}'; continue ${FLOW};`]);
+                    else addCase(`${id}:next`, [`${S} = '${id}'; continue ${FLOW};`]);
+                } else if (header.kind === 'of') {
+                    const iterator = header.await
+                        ? `(${header.right})[Symbol.asyncIterator] ? (${header.right})[Symbol.asyncIterator]() : (${header.right})[Symbol.iterator]()`
+                        : `(${header.right})[Symbol.iterator]()`;
+                    addCase(`${id}:init`, [`${loop.iterator} = ${iterator};`, `${S} = '${id}'; continue ${FLOW};`]);
+                    body.push(`${loop.step} = ${header.await ? 'await ' : ''}${loop.iterator}.next();`);
+                    body.push(`if (${loop.step}.done) { ${loop.iterator} = undefined; ${go(leave, id)} }`);
+                    body.push(`${withSemicolon(assign(header.target, `${loop.step}.value`))}`);
+                    body.push(go(enter, id));
+                } else {
+                    addCase(`${id}:init`, [
+                        `${loop.object} = ${header.right};`,
+                        `${loop.keys} = [];`,
+                        `for (const key in ${loop.object}) ${loop.keys}.push(key);`,
+                        `${loop.index} = 0;`,
+                        `${S} = '${id}'; continue ${FLOW};`
+                    ]);
+                    // Keys deleted during the loop are skipped, as in a real for…in.
+                    body.push(`while (${loop.index} < ${loop.keys}.length && !(${loop.keys}[${loop.index}] in ${loop.object})) ${loop.index}++;`);
+                    body.push(`if (${loop.index} >= ${loop.keys}.length) { ${go(leave, id)} }`);
+                    body.push(`${withSemicolon(assign(header.target, `${loop.keys}[${loop.index}++]`))}`);
+                    body.push(go(enter, id));
+                }
+                [loop.iterator, loop.step, loop.keys, loop.object, loop.index].filter(Boolean).forEach((v) => hoisted.add(v));
                 break;
             }
             default:
                 throw new Error(`The diagram is not structured and contains a ${node.kind} node, which cannot be expressed as a state machine.`);
         }
-        lines.push(`${pad(2)}}`);
+        cases.push({ state: id, body });
     }
-    lines.push(`${pad(2)}default:`);
-    lines.push(`${pad(3)}break flow;`);
-    lines.push(`${pad(1)}}`);
+    const order = new Map(ids.map((id, i) => [id, i]));
+    const rank = (state) => {
+        const [id, suffix] = state.split(':');
+        return (order.get(id) ?? 0) * 3 + (suffix === 'init' ? 0 : suffix ? 2 : 1);
+    };
+    cases.sort((a, b) => rank(a.state) - rank(b.state));
+
+    /* ---- the dispatcher ---- */
+    const handlers = new Map();
+    for (const c of cases) {
+        const [id] = c.state.split(':');
+        const handler = handlerOf(id);
+        if (!handler) continue;
+        if (!handlers.has(handler)) handlers.set(handler, []);
+        handlers.get(handler).push(c.state);
+    }
+    const lines = [];
+    const declarations = graph.nodes.filter((n) => n.unit === unitIndex && n.meta && n.meta.declaration);
+    declarations.forEach((n) => (n.code || []).forEach((c) => lines.push(...reindent(String(c), ''))));
+    const entry = next(unit.startId);
+    const first = !entry || kindOf(entry) === 'end' ? null : (loops.has(entry) ? `${entry}:init` : entry);
+    lines.push(`let ${S} = ${first ? `'${first}'` : 'null'};`);
+    lines.push(`${FLOW}: while (${S} !== null) {`);
+    const depth = handlers.size ? 2 : 1;
+    if (handlers.size) lines.push(`${pad(1)}try {`);
+    lines.push(`${pad(depth)}switch (${S}) {`);
+    for (const c of cases) {
+        lines.push(`${pad(depth + 1)}case '${c.state}': {`);
+        c.body.forEach((l) => lines.push(l.startsWith(KEEP) ? l : `${pad(depth + 2)}${l}`));
+        lines.push(`${pad(depth + 1)}}`);
+    }
+    lines.push(`${pad(depth + 1)}default:`);
+    lines.push(`${pad(depth + 2)}break ${FLOW};`);
+    lines.push(`${pad(depth)}}`);
+    if (handlers.size) {
+        lines.push(`${pad(1)}} catch (${ERROR}) {`);
+        lines.push(`${pad(2)}switch (${S}) {`);
+        for (const [handler, states] of handlers) {
+            states.forEach((state) => lines.push(`${pad(3)}case '${state}':`));
+            const node = nodes.get(handler);
+            if (node.kind === 'catch') {
+                const param = (node.code[0] || '').trim();
+                const names = patternNames(param);
+                hoist(names, handler);
+                const bind = param ? `${withSemicolon(assign(param, ERROR))} ` : '';
+                lines.push(`${pad(4)}${bind}${S} = '${next(handler) && loops.has(next(handler)) ? `${next(handler)}:init` : next(handler)}'; continue ${FLOW};`);
+            } else {
+                lines.push(`${pad(4)}${pending.get(handler)} = { error: ${ERROR} }; ${S} = '${handler}'; continue ${FLOW};`);
+            }
+        }
+        lines.push(`${pad(3)}default:`);
+        lines.push(`${pad(4)}throw ${ERROR};`);
+        lines.push(`${pad(2)}}`);
+        lines.push(`${pad(1)}}`);
+    }
     lines.push('}');
-    if (hoisted.length) lines.unshift(`let ${[...new Set(hoisted)].join(', ')};`);
-    return lines;
+    const variables = [...hoisted, ...pending.values()];
+    if (variables.length) lines.unshift(`let ${[...new Set(variables)].join(', ')};`);
+
+    for (const [name, sites] of declaredBy) {
+        if (sites.size > 1 || params.has(name)) {
+            warnings.push(`"${unit.name}": the variable "${name}" is declared in several places; the state machine uses one variable for all of them.`);
+        }
+    }
+    return { lines, warnings };
 }
 
-/** Splits on `separator` outside of brackets and strings. */
-function splitTopLevel(text, separator) {
+/** Statements of a multi-line text typed in the editor (one per top-level line). */
+function splitStatements(text) {
     const parts = [];
-    let depth = 0;
-    let quote = null;
-    let current = '';
-    for (let i = 0; i < text.length; i++) {
-        const ch = text[i];
-        if (quote) {
-            current += ch;
-            if (ch === '\\') {
-                current += text[++i] || '';
-            } else if (ch === quote) {
-                quote = null;
-            }
-            continue;
-        }
-        if (ch === '"' || ch === "'" || ch === '`') quote = ch;
-        else if ('([{'.includes(ch)) depth++;
-        else if (')]}'.includes(ch)) depth--;
-        if (ch === separator && depth === 0) {
-            parts.push(current);
-            current = '';
-        } else {
-            current += ch;
+    let current = [];
+    for (const line of text.split('\n')) {
+        current.push(line);
+        const joined = current.join('\n');
+        let depth = 0;
+        scanTopLevel(joined, (i, ch, d) => { depth = d; });
+        if (depth <= 0 && !/[,(+\-*/=&|?:.]\s*$/.test(line.trim())) {
+            if (joined.trim()) parts.push(joined);
+            current = [];
         }
     }
-    if (current.trim()) parts.push(current);
+    if (current.join('\n').trim()) parts.push(current.join('\n'));
     return parts;
 }
 
@@ -1090,9 +1708,11 @@ function header(meta) {
     const returnType = meta.returnType || '';
     const exportKw = meta.exportDefault ? 'export default ' : (meta.exported ? 'export ' : '');
     const arrow = meta.isArrow && !meta.generator;
+    // A named function expression keeps its own name (it may call itself through it).
+    const ownName = typeof meta.ownName === 'string' && /^[A-Za-z_$][\w$]*$/.test(meta.ownName) ? ` ${meta.ownName}` : '';
     const fnExpr = arrow
         ? `${asyncKw}${typeParams}(${params})${returnType} => {`
-        : `${asyncKw}function${star}${typeParams}(${params})${returnType} {`;
+        : `${asyncKw}function${star}${ownName}${typeParams}(${params})${returnType} {`;
 
     switch (meta.fnKind) {
         case 'function':
@@ -1111,6 +1731,7 @@ function header(meta) {
         default:
             if (meta.exportDefault) return { open: `export default ${fnExpr}`, close: arrow ? '};' : '}' };
             // A function expression is regenerated as the expression itself, so it can replace the original in place.
+            if (ownName) return { open: fnExpr, close: '}' };
             if (!arrow && meta.ownName !== false && meta.name && /^[A-Za-z_$][\w$]*$/.test(meta.name)
                 && meta.name !== 'anonymous' && meta.name !== 'default' && meta.ownName) {
                 return { open: `${asyncKw}function${star} ${meta.name}${typeParams}(${params})${returnType} {`, close: '}' };
@@ -1126,7 +1747,7 @@ function header(meta) {
 /**
  * @typedef {Object} CodegenResult
  * @property {string} code
- * @property {Array<{ name: string, mode: 'structured' | 'state-machine' }>} units
+ * @property {Array<{ name: string, mode: 'original' | 'structured' | 'state-machine' }>} units
  * @property {string[]} warnings
  */
 
@@ -1134,12 +1755,14 @@ function header(meta) {
  * Generates source code from a flowchart graph.
  *
  * @param {import('./graph').Graph} graph
- * @param {{ indent?: string, unit?: number, forceStateMachine?: boolean, strict?: boolean }} [options]
+ * @param {{ indent?: string, unit?: number, forceStateMachine?: boolean, strict?: boolean, verbatim?: boolean }} [options]
  *   strict: throw instead of falling back to a state machine (used by tests)
+ *   verbatim: print unchanged code as it was written (default true; false regenerates everything)
  * @returns {CodegenResult}
  */
 function generateCode(graph, options = {}) {
-    const indentUnit = options.indent || '    ';
+    const indentUnit = options.indent || graph.indent || '    ';
+    const verbatim = options.verbatim !== false && !options.forceStateMachine;
     // Inline callbacks are part of the code of the statement that contains them.
     const indices = typeof options.unit === 'number'
         ? [options.unit]
@@ -1154,33 +1777,154 @@ function generateCode(graph, options = {}) {
         const meta = (start && start.meta) || { isMain: true };
         let bodyLines;
         let mode = 'structured';
+        let whole = null;
         try {
             if (options.forceStateMachine) throw new UnstructuredError('forced');
             const emitter = new StructuredEmitter(graph, index);
-            const body = emitter.emitUnit();
-            warnings.push(...emitter.warnings);
-            bodyLines = print(body, 0, indentUnit);
+            emitter.indentUnit = indentUnit;
+            let body = emitter.emitUnit();
+            // Nothing changed in this function: print it back exactly as it was written.
+            if (verbatim && typeof graph.source === 'string' && meta.sig && unit.span
+                && unitRootSignature(emitter, body, meta) === meta.sig) {
+                whole = dedent(graph.source.slice(unit.span[0], unit.span[1]), graph.baseIndent ?? closingIndent(graph.source, unit.span));
+            } else {
+                if (verbatim) {
+                    emitter.warnings = [];
+                    emitter.covered = [];
+                    body = emitter.emitUnit({ verbatim: true });
+                }
+                warnings.push(...emitter.warnings);
+                bodyLines = print(body, 0, indentUnit);
+            }
         } catch (error) {
             if (!(error instanceof UnstructuredError)) throw error;
             if (options.strict) throw error;
             mode = 'state-machine';
-            bodyLines = stateMachine(graph, index, indentUnit);
+            const machine = stateMachine(graph, index, indentUnit);
+            bodyLines = machine.lines;
+            warnings.push(...machine.warnings);
             if (!options.forceStateMachine) {
                 warnings.push(`"${unit.name}" is not a structured flowchart; it was converted to an equivalent state machine.`);
             }
         }
-        units.push({ name: unit.name, mode });
+        units.push({ name: unit.name, mode: whole !== null ? 'original' : mode });
 
-        if (meta.isMain || meta.blockName) {
-            const block = meta.blockName ? ['static {', ...bodyLines.map((l) => (l ? indentUnit + l : l)), '}'] : bodyLines;
+        if (whole !== null) {
+            chunks.push(whole);
+        } else if (meta.isMain || meta.blockName) {
+            const block = meta.blockName ? ['static {', ...bodyLines.map((l) => indentLine(l, indentUnit)), '}'] : bodyLines;
             chunks.push(block.join('\n'));
         } else {
             const { open, close } = header(meta);
-            chunks.push([open, ...bodyLines.map((l) => (l ? indentUnit + l : l)), close].join('\n'));
+            chunks.push([open, ...bodyLines.map((l) => indentLine(l, indentUnit)), close].join('\n'));
         }
     }
 
-    return { code: `${chunks.join('\n\n')}\n`, units, warnings };
+    return { code: `${chunks.join('\n\n').split(KEEP).join('')}\n`, units, warnings };
+}
+
+function indentLine(line, indent) {
+    return line && !line.startsWith(KEEP) ? indent + line : line;
+}
+
+/** Signature of a whole function: its header and every statement of its body. */
+function unitRootSignature(emitter, body, meta) {
+    const parts = [meta.isMain ? 'main' : JSON.stringify(header(meta)), meta.blockName || ''];
+    for (const stmt of body) {
+        const sig = emitter.signature(stmt);
+        if (sig.free.size) return null;
+        parts.push(sig.hash);
+    }
+    return hash(parts.join('\u0001'));
+}
+
+/** Indentation of the last line of a span when it only closes the code (`}`, `};`). */
+function closingIndent(source, span) {
+    const text = source.slice(span[0], span[1]);
+    const last = text.slice(text.lastIndexOf('\n') + 1);
+    return text.includes('\n') && /^[ \t]*[}\])]/.test(last) ? last.match(/^[ \t]*/)[0] : '';
+}
+
+/** Removes `indent` from every line but the first (the code is re-indented where it is inserted). */
+function dedent(text, indent) {
+    if (!indent) return text;
+    const keep = templateLines(text);
+    return text.split('\n').map((l, i) => (i > 0 && !keep.has(i) && l.startsWith(indent) ? l.slice(indent.length) : l)).join('\n');
+}
+
+/**
+ * Records, on a graph built from code, the signatures that let unchanged
+ * statements and functions be printed back as written, and the signature of
+ * every embedded flow (to detect the callbacks that were edited).
+ * @param {import('./graph').Graph} graph
+ * @returns {import('./graph').Graph}
+ */
+function annotateSource(graph) {
+    const cache = new Map();
+    graph.units.forEach((unit, index) => {
+        if (isEmbeddedUnit(unit)) unit.sig = unitSignature(graph, index, cache);
+    });
+    if (typeof graph.source !== 'string') return graph;
+    const nodes = new Map(graph.nodes.map((n) => [n.id, n]));
+    const spans = graph.units.filter((u) => !isEmbeddedUnit(u) && u.span).map((u) => u.span);
+
+    graph.units.forEach((unit, index) => {
+        if (isEmbeddedUnit(unit)) return;
+        let emitter;
+        let body;
+        try {
+            emitter = new StructuredEmitter(graph, index);
+            body = emitter.emitUnit();
+        } catch (error) {
+            if (error instanceof UnstructuredError) return;
+            throw error;
+        }
+        const producing = (n) => emitter.flow.reachable.has(n.id) && (
+            ['process', 'decision', 'return', 'throw', 'try'].includes(n.kind)
+            || (n.kind === 'loop' && !(n.meta && n.meta.subtype === 'dowhile'))
+            || (n.kind === 'junction' && n.meta && n.meta.subtype === 'do'));
+        const unitNodes = graph.nodes.filter((n) => n.unit === index);
+
+        const visit = (list) => {
+            for (const stmt of list) {
+                const node = stmt.from && nodes.get(stmt.from);
+                const meta = node && node.meta;
+                if (meta && meta.span && meta.ids && COMPOUND.has(stmt.t) && stmt.line === 0) {
+                    const sig = emitter.signature(stmt);
+                    const [lo, hi] = meta.ids;
+                    const inRange = (id) => nodeIndex(id) >= lo && nodeIndex(id) < hi;
+                    const expected = unitNodes.filter((n) => inRange(n.id) && producing(n));
+                    // The statement must be exactly the code of these nodes, with no jump to a label outside of it.
+                    if (!sig.free.size && [...sig.froms].every(inRange) && expected.every((n) => sig.froms.has(n.id))) meta.sig = sig.hash;
+                }
+                forEachChildList(stmt, (child) => {
+                    visit(child);
+                    return child;
+                });
+            }
+        };
+        visit(body);
+
+        const start = nodes.get(unit.startId);
+        if (!start || !unit.span) return;
+        const meta = start.meta || (start.meta = { isMain: true });
+        if (meta.blockName) return;
+        // Top-level code mixed with functions: its span also holds them.
+        if (meta.isMain && spans.some((sp) => sp !== unit.span && sp[0] >= unit.span[0] && sp[1] <= unit.span[1])) return;
+        if (!meta.isMain && !sameShape(header(meta), graph.source.slice(unit.span[0], unit.span[1]))) return;
+        const sig = unitRootSignature(emitter, body, meta);
+        if (sig) meta.sig = sig;
+    });
+    return graph;
+}
+
+/** Whether the source of a function starts and ends like the header the generator would write. */
+function sameShape({ open, close }, text) {
+    const squash = (t) => t.replace(/\/\/[^\n]*|\/\*[\s\S]*?\*\//g, '').replace(/\s+/g, '').replace(/,\)/g, ')');
+    const source = squash(text);
+    const head = squash(open);
+    const tail = squash(close).replace(/;$/, '');
+    return source.startsWith(head) && source.replace(/;$/, '').endsWith(tail);
 }
 
 /**
@@ -1188,16 +1932,33 @@ function generateCode(graph, options = {}) {
  * flow back into the statement that contains it.
  * @returns {string}
  */
-function generateBody(graph, unitIndex, indent = '    ') {
-    let lines;
-    try {
-        const emitter = new StructuredEmitter(graph, unitIndex);
-        lines = print(emitter.emitUnit(), 0, indent);
-    } catch (error) {
-        if (!(error instanceof UnstructuredError)) throw error;
-        lines = stateMachine(graph, unitIndex, indent);
-    }
-    return lines.join('\n');
+function generateBody(graph, unitIndex, indent = graph.indent || '    ') {
+    return bodyLines(graph, unitIndex, indent).join('\n').split(KEEP).join('');
 }
 
-module.exports = { generateCode, generateBody, UnstructuredError };
+/** The expression of a flow that only returns a value (`return a + b;` → `a + b`), else null. */
+function singleReturn(graph, unitIndex) {
+    try {
+        const body = new StructuredEmitter(graph, unitIndex).emitUnit();
+        if (body.length !== 1 || body[0].t !== 'return' || body[0].notes) return null;
+        const expression = body[0].text.trim().replace(/^return\b/, '').replace(/;$/, '').trim();
+        return expression || null;
+    } catch (error) {
+        if (error instanceof UnstructuredError) return null;
+        throw error;
+    }
+}
+
+/** Lines of the body of a unit; lines starting with KEEP must not be re-indented. */
+function bodyLines(graph, unitIndex, indent) {
+    try {
+        const emitter = new StructuredEmitter(graph, unitIndex);
+        emitter.indentUnit = indent;
+        return print(emitter.emitUnit({ verbatim: true }), 0, indent);
+    } catch (error) {
+        if (!(error instanceof UnstructuredError)) throw error;
+        return stateMachine(graph, unitIndex, indent).lines;
+    }
+}
+
+module.exports = { generateCode, generateBody, annotateSource, unitSignature, UnstructuredError };
