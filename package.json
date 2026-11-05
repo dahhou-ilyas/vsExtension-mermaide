@@ -1,7 +1,7 @@
 {
   "name": "flowchartgenerator",
   "displayName": "Flowchart Generator",
-  "description": "Turn JavaScript and TypeScript into clear, interactive flowcharts — and flowcharts back into code. Own layout engine, classic flowchart symbols, live editing.",
+  "description": "Turn JavaScript and TypeScript into interactive flowcharts, edit the chart, and get your code back with formatting and comments intact. Private: runs fully offline.",
   "version": "3.2.0",
   "publisher": "GeneratedFlowChart",
   "author": {
@@ -21,6 +21,8 @@
     "color": "#1e1b4b",
     "theme": "dark"
   },
+  "pricing": "Free",
+  "qna": "marketplace",
   "engines": {
     "vscode": "^1.96.0"
   },
@@ -42,7 +44,13 @@
     "flowchart to code",
     "visual programming",
     "mermaid export",
-    "cfg"
+    "cfg",
+    "graph to code",
+    "code review",
+    "code visualization",
+    "node",
+    "jsx",
+    "tsx"
   ],
   "main": "./dist/extension.js",
   "activationEvents": [
