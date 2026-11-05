@@ -114,7 +114,7 @@ describe('exceptions (precise exceptional flow)', () => {
             }
             return log.join(',');
         }`;
-        const generated = generateCode(buildFlowchart(code).graph);
+        const generated = generateCode(buildFlowchart(code).graph, { verbatim: false });
         assert.strictEqual(generated.units[0].mode, 'structured', generated.code);
         for (const x of [-1, 0, 5]) assert.deepStrictEqual(run(generated.code, 'f', [x]), run(code, 'f', [x]));
     });
@@ -210,11 +210,18 @@ describe('inline callbacks', () => {
         assert.ok(generated.code.includes('list.forEach((n) => {'));
     });
 
-    it('keeps callback flows read-only in the editor and drops them when their statement changes', () => {
+    it('edits callback flows in place and drops them when their statement changes', () => {
         const { graph } = buildFlowchart(source);
         const inner = graph.nodes.find((n) => n.unit === 1 && n.kind === 'decision');
-        assert.throws(() => updateNode(graph, inner.id, { code: 'x' }), GraphEditError);
-        assert.throws(() => deleteNode(graph, inner.id), GraphEditError);
+        // Editing the flow of a callback rewrites its body inside the statement that holds it.
+        const edited1 = updateNode(graph, inner.id, { code: 'order.cancelled || order.amount < 0' });
+        const code1 = generateCode(edited1).code;
+        assert.match(code1, /orders\.forEach\(\(order\) => \{\n\s+if \(order\.cancelled \|\| order\.amount < 0\) \{/, code1);
+        assert.ok(code1.includes('fetch(') && code1.includes('.then('), 'untouched callbacks are kept as written');
+        assert.doesNotThrow(() => deleteNode(graph, inner.id));
+        // The parameters of a callback belong to the parent statement.
+        const callbackStart = graph.nodes.find((n) => n.unit === 1 && n.kind === 'start');
+        assert.throws(() => updateNode(graph, callbackStart.id, { params: 'x' }), GraphEditError);
         const callbackEdge = graph.edges.findIndex((e) => e.kind === 'callback');
         assert.throws(() => insertOnEdge(graph, callbackEdge, 'process'), GraphEditError);
 

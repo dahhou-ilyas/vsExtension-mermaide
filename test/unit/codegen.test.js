@@ -21,7 +21,12 @@ function run(code, fnName, args) {
 /** Generates code back from the flowchart of `code` and checks both behave identically. */
 function assertRoundTrip(code, fnName, inputs, options = {}) {
     const result = buildFlowchart(code, { mergeSequentialStatements: true, ...options });
-    const generated = generateCode(result.graph);
+    // The regenerator itself (verbatim: false), then the default output, which reuses unchanged code as written.
+    const generated = generateCode(result.graph, { verbatim: false });
+    const preserved = generateCode(result.graph);
+    for (const args of inputs) {
+        assert.deepStrictEqual(run(preserved.code, fnName, args), run(code, fnName, args), `preserved output differs\n${preserved.code}`);
+    }
     for (const unit of generated.units) {
         assert.strictEqual(unit.mode, options.expectMode || 'structured', `${unit.name} should be ${options.expectMode || 'structured'}:\n${generated.code}`);
     }
@@ -403,13 +408,66 @@ describe('generateCode (round trip: code → flowchart → code)', () => {
         });
     }
 
-    it('also preserves behaviour through the state machine fallback', () => {
-        for (const [name, sample] of Object.entries(SAMPLES)) {
-            if (/for \(|try|switch/.test(sample.code)) continue;
+    it('also preserves behaviour through the state machine fallback (every construct)', () => {
+        const extra = {
+            forLoops: {
+                code: `function f(list) {
+                    const out = [];
+                    for (let i = 0, j = list.length - 1; i < j; i++, j--) out.push(list[i] + list[j]);
+                    for (const [k, { v = 0 }] of list.map((x, n) => [n, { v: x }])) { if (k > 3) break; out.push(k * v); }
+                    const o = { a: 1, b: 2, c: 3 };
+                    for (const key in o) { if (key === 'a') delete o.b; out.push(key); }
+                    return out.join(',');
+                }`,
+                inputs: [[[1, 2, 3, 4, 5, 6]], [[]], [[7]]]
+            },
+            iteratorClosed: {
+                code: `function f(n) {
+                    const log = [];
+                    function* gen() { try { yield 1; yield 2; yield 3; } finally { log.push('closed'); } }
+                    for (const x of gen()) { if (x === n) break; log.push(x); }
+                    return log.join(',');
+                }`,
+                inputs: [[2], [9]]
+            },
+            tryFinally: {
+                code: `function f(x) {
+                    const log = [];
+                    try {
+                        try {
+                            if (x === 1) throw new Error('one');
+                            if (x === 2) return 'early';
+                            log.push('body');
+                        } finally {
+                            log.push('inner');
+                        }
+                        const { a, b: [c] } = { a: x, b: [x * 2] };
+                        log.push(a + c);
+                    } catch ({ message }) {
+                        log.push(message);
+                    } finally {
+                        log.push('outer');
+                    }
+                    class Box { constructor(v) { this.v = v; } }
+                    return log.join(',') + new Box(x).v;
+                }`,
+                inputs: [[0], [1], [2]]
+            },
+            shadowedNames: {
+                code: `function f(state, $state) {
+                    let total = state + $state;
+                    for (let i = 0; i < 3; i++) { let tmp; if (i === 1) tmp = 5; total += tmp || 0; }
+                    return total;
+                }`,
+                inputs: [[1, 2]]
+            }
+        };
+        for (const [name, sample] of Object.entries({ ...SAMPLES, ...extra })) {
             const fn = sample.fn || /function (\w+)/.exec(sample.code)[1];
             const generated = generateCode(buildFlowchart(sample.code).graph, { forceStateMachine: true });
+            assert.strictEqual(generated.units[0].mode, 'state-machine');
             for (const args of sample.inputs) {
-                assert.deepStrictEqual(run(generated.code, fn, args), run(sample.code, fn, args), `${name}\n${generated.code}`);
+                assert.deepStrictEqual(run(generated.code, fn, args), run(sample.code, fn, args), `${name} ${JSON.stringify(args)}\n${generated.code}`);
             }
         }
     });
@@ -438,15 +496,15 @@ describe('generateCode (round trip: code → flowchart → code)', () => {
             ['module.exports.run = function (a) { go(a); };', /^module\.exports\.run = function\(a\) \{/]
         ];
         for (const [source, expected] of cases) {
-            const { code } = generateCode(buildFlowchart(source, { language: 'typescript' }).graph);
+            const { code } = generateCode(buildFlowchart(source, { language: 'typescript' }).graph, { verbatim: false });
             assert.match(code, expected, code);
         }
-        const method = generateCode(buildFlowchart('class A { static async save(item) { this.x = item; } }').graph).code;
+        const method = generateCode(buildFlowchart('class A { static async save(item) { this.x = item; } }').graph, { verbatim: false }).code;
         assert.match(method, /^static async save\(item\) \{/);
     });
 
     it('generates loose statements without a wrapper', () => {
-        const { code } = generateCode(buildFlowchart('const a = 1;\nif (a) { log(a); }').graph);
+        const { code } = generateCode(buildFlowchart('const a = 1;\nif (a) { log(a); }').graph, { verbatim: false });
         assert.strictEqual(code, 'const a = 1;\nif (a) {\n    log(a);\n}\n');
     });
 

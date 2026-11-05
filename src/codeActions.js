@@ -3,6 +3,7 @@
 const vscode = require('vscode');
 const { generateCode } = require('./core/codegen');
 const { toMermaid } = require('./core/graph');
+const { indentCode } = require('./core/text');
 const { MESSAGES } = require('./constants');
 const { labelSettings } = require('./config');
 const { hash } = require('./flowchartService');
@@ -53,8 +54,8 @@ function indentLike(code, document, position) {
     const line = document.lineAt(position.line).text;
     const indent = line.slice(0, line.length - line.trimStart().length);
     const eol = document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n';
-    const lines = code.replace(/\n$/, '').split('\n');
-    return lines.map((l, i) => (i === 0 || !l ? l : indent + l)).join(eol);
+    // Lines inside template literals are string content: they are never re-indented.
+    return indentCode(code, indent, eol);
 }
 
 /**

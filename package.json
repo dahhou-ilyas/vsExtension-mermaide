@@ -2,7 +2,7 @@
   "name": "flowchartgenerator",
   "displayName": "Flowchart Generator",
   "description": "Turn JavaScript and TypeScript into clear, interactive flowcharts — and flowcharts back into code. Own layout engine, classic flowchart symbols, live editing.",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "publisher": "GeneratedFlowChart",
   "author": {
     "name": "Ilyas Dahhou"

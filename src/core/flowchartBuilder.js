@@ -3,6 +3,7 @@
 const { parseCode, FlowchartParseError, WRAPPER_CLASS } = require('./parse');
 const { analyzeUnit } = require('./metrics');
 const { GRAPH_VERSION, collapse, toMermaid } = require('./graph');
+const { annotateSource } = require('./codegen');
 
 /**
  * @typedef {Object} BuildOptions
@@ -83,6 +84,9 @@ const NON_EXECUTABLE = new Set([
     'InterfaceDeclaration'
 ]);
 
+/** Statements printed back verbatim when their flow is unchanged. */
+const COMPOUND_TYPES = new Set(['IfStatement', 'WhileStatement', 'ForStatement', 'ForInStatement', 'ForOfStatement', 'DoWhileStatement', 'SwitchStatement', 'TryStatement', 'LabeledStatement']);
+
 const LOOP_TYPES = new Set(['WhileStatement', 'ForStatement', 'ForInStatement', 'ForOfStatement', 'DoWhileStatement']);
 
 function isFunctionNode(node) {
@@ -150,6 +154,31 @@ function declaresInBlock(block) {
 }
 
 /** Cyclomatic complexity of a function body (nested functions excluded). */
+/**
+ * Whether a statement contains `break label` / `continue label` for a label
+ * defined outside of it: printed as written, it would depend on code around it.
+ */
+function jumpsOutOfLabels(stmt) {
+    let free = false;
+    const visit = (node, labels) => {
+        if (free || !node || typeof node.type !== 'string') return;
+        if (FUNCTION_TYPES.has(node.type) || node.type === 'ArrowFunctionExpression') return;
+        if ((node.type === 'BreakStatement' || node.type === 'ContinueStatement') && node.label && !labels.has(node.label.name)) {
+            free = true;
+            return;
+        }
+        const inner = node.type === 'LabeledStatement' ? new Set([...labels, node.label.name]) : labels;
+        for (const key of Object.keys(node)) {
+            if (key === 'loc' || key === 'extra' || key.endsWith('Comments')) continue;
+            const value = node[key];
+            if (Array.isArray(value)) value.forEach((v) => visit(v, inner));
+            else if (value && typeof value.type === 'string') visit(value, inner);
+        }
+    };
+    visit(stmt, new Set());
+    return free;
+}
+
 function computeComplexity(root) {
     let complexity = 1;
     const visit = (node) => {
@@ -222,6 +251,12 @@ class FlowchartBuilder {
         this.scopeCounter = 0;
         /** @type {Map<string, number>} */
         this.callbackNames = new Map();
+        /** Comments around each statement of a statement list (see collectTrivia). */
+        this.trivia = new Map();
+        /** Comments of statements that produce no node (break, continue): they go to the next one. */
+        this.pendingTrivia = null;
+        /** Where the last simple statement was merged: { id, line }. */
+        this.lastPlacement = null;
     }
 
     /* ---------- source helpers ---------- */
@@ -392,9 +427,52 @@ class FlowchartBuilder {
     addFold(nodeId, astNode, fn) {
         const node = this.nodeById.get(nodeId);
         if (!node || fn.body.type !== 'BlockStatement' || node.code.length !== 1) return;
-        const base = astNode.start;
-        if (fn.body.start < base || fn.body.end > astNode.end) return;
-        node.meta.folds = [...(node.meta.folds || []), [fn.body.start - base, fn.body.end - base]];
+        const range = this.hostRange(node, fn);
+        if (!range || range.field !== 'code') return;
+        node.meta.folds = [...(node.meta.folds || []), range.range];
+    }
+
+    /**
+     * Where the body of an embedded function lies in the code of the node that
+     * holds it: `{ field: 'code' | 'header', line, range: [start, end] }`, the
+     * range being relative to that text. Found by position when the text is a
+     * slice of the source, by search otherwise.
+     */
+    hostRange(node, fn) {
+        let start = fn.body.start;
+        let end = fn.body.end;
+        // `x => ({ … })`: the parentheses belong to the body.
+        if (fn.body.extra && fn.body.extra.parenthesized) {
+            start = fn.body.extra.parenStart;
+            const close = this.text.indexOf(')', end);
+            if (close >= 0) end = close + 1;
+        }
+        const body = this.text.slice(start, end);
+        const texts = (node.code || []).map((text, line) => ({ field: 'code', line, text }));
+        if (node.meta && node.meta.header) texts.push({ field: 'header', line: 0, text: node.meta.header });
+        const expression = fn.body.type !== 'BlockStatement';
+        for (const candidate of texts) {
+            const at = this.text.indexOf(candidate.text, Math.max(0, start - candidate.text.length));
+            // The text is the slice of the source that contains the body.
+            if (at >= 0 && at <= start && at + candidate.text.length >= end) {
+                return { field: candidate.field, line: candidate.line, range: [start - at, end - at], expression };
+            }
+        }
+        // Synthetic text (`return <expression body>`): the body appears once in it.
+        for (const candidate of texts) {
+            const at = candidate.text.indexOf(body);
+            if (at >= 0 && candidate.text.indexOf(body, at + 1) < 0) {
+                return { field: candidate.field, line: candidate.line, range: [at, at + body.length], expression };
+            }
+        }
+        return null;
+    }
+
+    /** Host of an embedded flow: the node (and the range in its code) that holds the function body. */
+    hostOf(nodeId, fn) {
+        const node = this.nodeById.get(nodeId);
+        const range = node && this.hostRange(node, fn);
+        return range ? { nodeId, ...range } : undefined;
     }
 
     /** Whether a statement contains a callback that will be drawn as its own flow. */
@@ -466,7 +544,7 @@ class FlowchartBuilder {
             callee: context.callee,
             jsxAttribute: context.jsxAttribute || undefined,
             name: context.shortName || this.functionName(fn),
-            ownName: !!(fn.id && fn.id.name),
+            ownName: fn.id && fn.id.name ? fn.id.name : false,
             displayName: unit.name,
             params,
             async: !!fn.async,
@@ -599,10 +677,143 @@ class FlowchartBuilder {
         }
     }
 
+    /* ---------- comments (trivia) ---------- */
+
+    /**
+     * Assigns every comment that lies *between* statements to a statement, the
+     * way Roslyn attaches trivia to tokens: comments on the lines above a
+     * statement lead it, a comment on the same line as its end trails it, and
+     * comments after the last statement of a block follow that statement.
+     * Comments inside a statement are already part of its code.
+     * @param {any} root
+     * @param {any[]} comments
+     */
+    collectTrivia(root, comments) {
+        const list = (comments || []).filter((c) => c.start >= this.offset).sort((a, b) => a.start - b.start);
+        const between = (from, to) => {
+            // comments in [from, to): binary search for the first one.
+            let lo = 0;
+            let hi = list.length;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (list[mid].start < from) lo = mid + 1;
+                else hi = mid;
+            }
+            const found = [];
+            for (let i = lo; i < list.length && list[i].end <= to; i++) found.push(list[i]);
+            return found;
+        };
+        const text = this.text;
+        const sameLine = (from, to) => !/\n/.test(text.slice(from, to));
+        const blankBetween = (from, to) => /\n[ \t]*\r?\n/.test(text.slice(from, to));
+        const raw = (c) => text.slice(c.start, c.end);
+
+        const visitList = (statements, containerStart, containerEnd) => {
+            statements.forEach((stmt, i) => {
+                const prev = statements[i - 1];
+                const gapStart = prev ? prev.end : containerStart;
+                const found = between(gapStart, stmt.start);
+                const entry = this.triviaOf(stmt);
+                let rest = found;
+                if (prev && found.length && sameLine(prev.end, found[0].start)) {
+                    const prevEntry = this.triviaOf(prev);
+                    prevEntry.tail = raw(found[0]);
+                    prevEntry.tailEnd = found[0].end;
+                    rest = found.slice(1);
+                }
+                if (rest.length) entry.lead = rest.map(raw);
+                const from = prev ? (this.trivia.get(prev).tailEnd || prev.end) : null;
+                if (from !== null && blankBetween(from, rest.length ? rest[0].start : stmt.start)) entry.blank = true;
+            });
+            const last = statements[statements.length - 1];
+            if (last && containerEnd > last.end) {
+                const found = between(last.end, containerEnd);
+                const entry = this.triviaOf(last);
+                let rest = found;
+                if (found.length && sameLine(last.end, found[0].start)) {
+                    entry.tail = raw(found[0]);
+                    rest = found.slice(1);
+                }
+                if (rest.length) entry.after = rest.map(raw);
+            }
+        };
+
+        const walk = (node) => {
+            if (!node || typeof node.type !== 'string') return;
+            if (node.type === 'BlockStatement' || node.type === 'StaticBlock') {
+                visitList(node.body, node.start + 1, node.end - 1);
+            } else if (node.type === 'SwitchStatement') {
+                node.cases.forEach((c, i) => {
+                    const colon = text.indexOf(':', c.test ? c.test.end : c.start);
+                    const end = i + 1 < node.cases.length ? node.cases[i + 1].start : node.end - 1;
+                    visitList(c.consequent, colon + 1, end);
+                });
+            } else if (node.type === 'Program') {
+                visitList(node.body, this.offset, text.length);
+            }
+            for (const key of Object.keys(node)) {
+                if (key === 'loc' || key === 'extra' || key.endsWith('Comments')) continue;
+                const value = node[key];
+                if (Array.isArray(value)) value.forEach(walk);
+                else if (value && typeof value.type === 'string') walk(value);
+            }
+        };
+        walk(root);
+    }
+
+    triviaOf(stmt) {
+        if (!this.trivia.has(stmt)) this.trivia.set(stmt, {});
+        return this.trivia.get(stmt);
+    }
+
+    /** The node a statement starts with, or the line of the node it was merged into. */
+    headOf(stmt, before) {
+        // A merged statement creates no node; a compound one may merge statements of its own body.
+        if (this.counter === before) return this.lastPlacement;
+        {
+            const id = `n${before}`;
+            const node = this.nodeById.get(id);
+            // Compound statements remember their source span: unchanged, they are printed as written.
+            if (node && COMPOUND_TYPES.has(stmt.type) && !jumpsOutOfLabels(stmt)) {
+                node.meta.span = [this.rel(stmt.start), this.rel(stmt.end)];
+                node.meta.ids = [before, this.counter];
+            }
+            return { id, line: 0 };
+        }
+    }
+
+    /** Stores the comments of `stmt` on the node (and line) that represents it. */
+    placeTrivia(stmt, place) {
+        const entry = this.trivia.get(stmt);
+        let notes = entry ? { ...entry } : null;
+        if (notes) delete notes.tailEnd;
+        if (this.pendingTrivia) {
+            notes = notes || {};
+            const pending = this.pendingTrivia;
+            notes.lead = [...(pending.lead || []), ...(pending.tail ? [pending.tail] : []), ...(pending.after || []), ...(notes.lead || [])];
+            if (pending.blank) notes.blank = true;
+            this.pendingTrivia = null;
+        }
+        if (!notes || !Object.keys(notes).length) return;
+        const node = place && this.nodeById.get(place.id);
+        if (!node) {
+            this.pendingTrivia = notes;
+            return;
+        }
+        node.comments = node.comments || {};
+        const current = node.comments[place.line] || {};
+        node.comments[place.line] = {
+            ...current,
+            ...notes,
+            ...(current.lead || notes.lead ? { lead: [...(current.lead || []), ...(notes.lead || [])] } : {})
+        };
+    }
+
     /* ---------- statement processing ---------- */
 
     processList(statements, frontier, ctx) {
         const savedUnreachable = this.unreachable;
+        let lastPlace = null;
         for (const stmt of statements) {
             if (stmt.type === 'FunctionDeclaration') {
                 // The declaration stays in the parent's code (a definition node); its body is drawn
@@ -618,19 +829,37 @@ class FlowchartBuilder {
                 this.seal([{ id }]);
                 if (frontier.length) frontier = this.seal(this.connect(frontier, id));
                 this.pendingNested.push({ fn: stmt, name: `${ctx.unitName} › ${this.functionName(stmt)}`, sourceNodeId: id });
+                this.placeTrivia(stmt, { id, line: 0 });
+                lastPlace = { id, line: 0 };
                 continue;
             }
             if (NON_EXECUTABLE.has(stmt.type)) continue;
             if (frontier.length === 0) this.unreachable = true;
+            const before = this.counter;
+            this.lastPlacement = null;
             if (stmt.type === 'BlockStatement' && declaresInBlock(stmt)) {
                 // A block that only limits the scope of its declarations: keep it for code generation.
                 this.scopeStack.push(`b${this.scopeCounter++}`);
                 this.seal(frontier);
+                // Comments of the block lead its first statement.
+                this.placeTrivia(stmt, null);
                 frontier = this.seal(this.processList(stmt.body, frontier, ctx));
                 this.scopeStack.pop();
                 continue;
             }
             frontier = this.processStatement(stmt, frontier, ctx);
+            const place = this.headOf(stmt, before);
+            this.placeTrivia(stmt, place);
+            if (place) lastPlace = place;
+        }
+        // Comments of a trailing break / continue follow the last statement of the list.
+        if (this.pendingTrivia && lastPlace) {
+            const node = this.nodeById.get(lastPlace.id);
+            const notes = this.pendingTrivia;
+            this.pendingTrivia = null;
+            node.comments = node.comments || {};
+            const entry = node.comments[lastPlace.line] || (node.comments[lastPlace.line] = {});
+            entry.after = [...(entry.after || []), ...(notes.lead || []), ...(notes.tail ? [notes.tail] : []), ...(notes.after || [])];
         }
         this.unreachable = savedUnreachable;
         return frontier;
@@ -688,6 +917,7 @@ class FlowchartBuilder {
                 && prev.code.length < maxStatementsPerBlock) {
                 prev.code.push(code);
                 prev.end = this.rel(stmt.end);
+                this.lastPlacement = { id: prev.id, line: prev.code.length - 1 };
                 prev.async = prev.async || isAsync;
                 this.annotate(prev.id, stmt, ctx);
                 return frontier;
@@ -702,10 +932,16 @@ class FlowchartBuilder {
     }
 
     processIf(stmt, frontier, ctx) {
-        const id = this.addNode('decision', [this.src(stmt.test)], stmt.test, { subtype: 'if' });
+        const id = this.addNode('decision', [this.src(stmt.test)], stmt.test, {
+            subtype: 'if',
+            // `if (…)` as written, reused while the condition is unchanged.
+            head: [this.rel(stmt.start), this.rel(stmt.consequent.start)]
+        });
         this.connect(frontier, id);
         this.annotate(id, stmt.test, ctx);
         const thenOut = this.processStatement(stmt.consequent, [{ id, label: 'yes' }], ctx);
+        // `if (c) { …; continue; }` without else: written as a guard, the rest of the code follows the if.
+        if (!stmt.alternate && thenOut.length === 0) this.nodeById.get(id).meta.guard = true;
         const elseOut = stmt.alternate
             ? this.processStatement(stmt.alternate, [{ id, label: 'no' }], ctx)
             : [{ id, label: 'no' }];
@@ -716,7 +952,8 @@ class FlowchartBuilder {
         const subtype = { WhileStatement: 'while', ForStatement: 'for', ForInStatement: 'forin', ForOfStatement: 'forof' }[stmt.type];
         const header = this.addNode('loop', [stmt.test ? this.src(stmt.test) : ''], { start: stmt.start, end: stmt.body.start }, {
             subtype,
-            header: this.text.slice(stmt.start, stmt.body.start).trim()
+            header: this.text.slice(stmt.start, stmt.body.start).trim(),
+            ...(labels.length ? { labels } : {})
         });
         this.connect(frontier, header);
         for (const part of [stmt.init, stmt.test, stmt.update, stmt.right]) if (part) this.annotate(header, part, ctx);
@@ -734,7 +971,7 @@ class FlowchartBuilder {
     }
 
     processDoWhile(stmt, frontier, ctx, labels) {
-        const entry = this.addNode('junction', [], { start: stmt.start, end: stmt.body.start }, { subtype: 'do' });
+        const entry = this.addNode('junction', [], { start: stmt.start, end: stmt.body.start }, { subtype: 'do', ...(labels.length ? { labels } : {}) });
         this.connect(frontier, entry);
         const test = this.addNode('loop', [this.src(stmt.test)], stmt.test, { subtype: 'dowhile' });
         this.annotate(test, stmt.test, ctx);
@@ -751,7 +988,8 @@ class FlowchartBuilder {
         const id = this.addNode('decision', [this.src(stmt.discriminant)], stmt.discriminant, {
             subtype: 'switch',
             // Source order of the cases (null = default): the order in which they are tested.
-            caseOrder: stmt.cases.map((c) => (c.test ? this.src(c.test) : null))
+            caseOrder: stmt.cases.map((c) => (c.test ? this.src(c.test) : null)),
+            ...(labels.length ? { labels } : {})
         });
         this.connect(frontier, id);
         this.annotate(id, stmt.discriminant, ctx);
@@ -785,7 +1023,12 @@ class FlowchartBuilder {
      *    is what compilers do when they duplicate finally blocks per exit path.
      */
     processTry(stmt, frontier, ctx) {
-        const tryId = this.addNode('try', [], { start: stmt.start, end: stmt.block.start + 1 }, {});
+        const tryId = this.addNode('try', [], { start: stmt.start, end: stmt.block.start + 1 }, {
+            // Source spans of the protected regions (used by the state machine fallback).
+            stmt: [this.rel(stmt.start), this.rel(stmt.end)],
+            block: [this.rel(stmt.block.start), this.rel(stmt.block.end)],
+            ...(stmt.handler ? { handlerBody: [this.rel(stmt.handler.body.start), this.rel(stmt.handler.body.end)] } : {})
+        });
         const tryMeta = this.nodeById.get(tryId).meta;
         this.connect(frontier, tryId);
 
@@ -1001,11 +1244,12 @@ class FlowchartBuilder {
                 fn: c.fn,
                 rangeNode: c.fn,
                 sourceNodeId: c.sourceNodeId,
+                host: this.hostOf(c.sourceNodeId, c.fn),
                 callbackDepth: c.depth,
                 context: { fnKind: 'callback', callee: c.callee, jsxAttribute: c.jsxAttribute }
             })),
             ...this.pendingNested.map((n) => ({
-                kind: 'nested', name: n.name, fn: n.fn, rangeNode: n.fn, sourceNodeId: n.sourceNodeId, context: { fnKind: 'function' }
+                kind: 'nested', name: n.name, fn: n.fn, rangeNode: n.fn, sourceNodeId: n.sourceNodeId, host: this.hostOf(n.sourceNodeId, n.fn), context: { fnKind: 'function' }
             }))
         ];
         this.units.splice(position, 0, ...followers);
@@ -1028,7 +1272,8 @@ class FlowchartBuilder {
         }
     }
 
-    build(program) {
+    build(program, comments) {
+        this.collectTrivia(program, comments);
         this.collectUnits(program);
         if (this.units.length === 0) {
             throw new FlowchartParseError('No executable code found in the selection.');
@@ -1046,19 +1291,29 @@ class FlowchartBuilder {
         return {
             version: GRAPH_VERSION,
             direction: this.options.direction === 'LR' ? 'LR' : 'TD',
-            units: this.units.map((u) => ({ name: u.name, kind: u.kind, startId: u.startId, endId: u.endId })),
+            units: this.units.map((u) => ({
+                name: u.name,
+                kind: u.kind,
+                startId: u.startId,
+                endId: u.endId,
+                ...(u.host ? { host: u.host } : {}),
+                ...(u.rangeNode ? { span: [this.rel(u.rangeNode.start), this.rel(u.rangeNode.end)] } : {})
+            })),
             nodes: this.nodes.map((n) => {
                 const node = { id: n.id, kind: n.kind, unit: n.unit, code: n.code, meta: n.meta };
                 if (n.unreachable) node.unreachable = true;
                 if (n.async) node.async = true;
                 if (n.scope) node.scope = n.scope;
+                if (n.comments) node.comments = n.comments;
                 if (n.start !== undefined) {
                     node.start = n.start;
                     node.end = n.end;
                 }
                 return node;
             }),
-            edges: this.edges.map((e) => ({ ...e }))
+            edges: this.edges.map((e) => ({ ...e })),
+            // The original code: unchanged parts of the flow are printed back as written.
+            ...(typeof this.source === 'string' ? { source: this.source, indent: detectIndent(this.source) } : {})
         };
     }
 
@@ -1090,7 +1345,7 @@ class FlowchartBuilder {
         } else {
             title = named.slice(0, 2).join(', ') + (primary.length > 2 ? ` +${primary.length - 2}` : '');
         }
-        const graph = this.toGraph();
+        const graph = annotateSource(this.toGraph());
         return {
             graph,
             mermaid: toMermaid(graph, this.options),
@@ -1110,6 +1365,33 @@ class FlowchartBuilder {
 }
 
 /**
+ * Indentation unit of a piece of code: a tab, or the most common difference
+ * between the indentation of consecutive lines (2, 4, ... spaces).
+ * @param {string} code
+ * @returns {string | undefined}
+ */
+function detectIndent(code) {
+    const lines = String(code).split(/\r?\n/).filter((l) => l.trim());
+    let tabs = 0;
+    const steps = new Map();
+    let previous = 0;
+    for (const line of lines) {
+        const indent = line.match(/^[ \t]*/)[0];
+        if (indent.startsWith('\t')) {
+            tabs++;
+            continue;
+        }
+        const width = indent.length;
+        const step = width - previous;
+        if (step > 0 && step <= 8) steps.set(step, (steps.get(step) || 0) + 1);
+        previous = width;
+    }
+    const best = [...steps].sort((a, b) => b[1] - a[1] || a[0] - b[0])[0];
+    if (tabs > (best ? best[1] : 0)) return '\t';
+    return best ? ' '.repeat(best[0]) : undefined;
+}
+
+/**
  * Builds a Mermaid flowchart describing the control flow of the given code.
  *
  * @param {string} code
@@ -1124,7 +1406,8 @@ function buildFlowchart(code, options = {}) {
     }
     const { ast, text, offset } = parseCode(code, opts);
     const builder = new FlowchartBuilder(text, offset, opts);
-    builder.build(ast.program);
+    builder.source = code;
+    builder.build(ast.program, ast.comments);
     return builder.result();
 }
 
@@ -1132,4 +1415,4 @@ function stripUndefined(object) {
     return Object.fromEntries(Object.entries(object).filter(([, v]) => v !== undefined));
 }
 
-module.exports = { buildFlowchart, computeComplexity, FlowchartParseError, DEFAULT_OPTIONS };
+module.exports = { buildFlowchart, computeComplexity, detectIndent, FlowchartParseError, DEFAULT_OPTIONS };

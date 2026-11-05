@@ -26,13 +26,30 @@ function findNode(graph, id) {
     return node;
 }
 
-/** Nodes of inline callback flows mirror code embedded in another statement: they are read-only. */
-function assertEditable(graph, node) {
+/**
+ * Whether the flow of an embedded unit (inline callback, nested function) can
+ * be edited: the builder recorded where its body lies in the statement that
+ * holds it, so the code generator can put the edited body back there.
+ */
+function isSpliceable(unit) {
+    return !!(unit && unit.host && unit.sig);
+}
+
+/**
+ * Nodes of embedded flows are editable when their body can be spliced back
+ * into the parent statement. Their signature (parameters, name) belongs to
+ * the parent statement and is edited there.
+ */
+function assertEditable(graph, node, { header = false } = {}) {
     const unit = graph.units[node.unit];
-    if (isEmbeddedUnit(unit)) {
+    if (!isEmbeddedUnit(unit)) return;
+    if (!isSpliceable(unit)) {
         throw new GraphEditError(unit.kind === 'nested'
             ? 'This node belongs to a nested function. Edit its definition in the parent flow instead.'
             : 'This node belongs to an inline callback. Edit the statement that contains the callback instead.');
+    }
+    if (header && node.kind === 'start') {
+        throw new GraphEditError('The parameters of an inline callback are part of the statement that contains it. Edit that statement to change them.');
     }
 }
 
@@ -117,7 +134,7 @@ function prune(graph) {
 function updateNode(graph, id, changes) {
     let next = cloneGraph(graph);
     const node = findNode(next, id);
-    assertEditable(next, node);
+    assertEditable(next, node, { header: true });
     node.meta = node.meta || {};
     switch (node.kind) {
         case 'start':
@@ -134,6 +151,13 @@ function updateNode(graph, id, changes) {
         case 'process':
             node.code = [String(changes.code ?? '').replace(/\s+$/, '')];
             node.meta.multiline = true;
+            // The comments inside the node were part of the edited text (see editableText).
+            if (node.comments) {
+                const first = node.comments[0] || {};
+                const kept = { ...(first.lead ? { lead: first.lead } : {}), ...(first.blank ? { blank: true } : {}) };
+                if (Object.keys(kept).length) node.comments = { 0: kept };
+                else delete node.comments;
+            }
             break;
         case 'loop':
             if (node.meta.subtype === 'for' || node.meta.subtype === 'forin' || node.meta.subtype === 'forof') {
@@ -316,7 +340,28 @@ function isEditable(graph, id) {
     const node = graph.nodes.find((n) => n.id === id);
     if (!node) return false;
     const unit = graph.units[node.unit];
-    return !isEmbeddedUnit(unit);
+    return !isEmbeddedUnit(unit) || isSpliceable(unit);
 }
 
-module.exports = { updateNode, insertOnEdge, deleteNode, newGraph, outgoingEdges, prune, isEditable, removeUnits, GraphEditError, INSERTABLE };
+/**
+ * Code of a process node as shown in the editor: its statements with the
+ * comments between them, so editing the text keeps (or changes) them. The
+ * comments above the first statement stay attached to the node.
+ * @returns {string}
+ */
+function editableText(node) {
+    const notes = node.comments || {};
+    const lines = [];
+    (node.code || []).forEach((code, i) => {
+        const note = notes[i] || {};
+        if (i > 0) {
+            if (note.blank) lines.push('');
+            (note.lead || []).forEach((c) => lines.push(c));
+        }
+        lines.push(note.tail ? `${code} ${note.tail}` : String(code));
+        (note.after || []).forEach((c) => lines.push(c));
+    });
+    return lines.join('\n');
+}
+
+module.exports = { updateNode, insertOnEdge, deleteNode, newGraph, outgoingEdges, prune, isEditable, isSpliceable, editableText, removeUnits, GraphEditError, INSERTABLE };

@@ -3,6 +3,24 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [3.1.0] - 2026-11-05
+
+### Added
+- **Faithful flowchart → code**: unchanged statements are reprinted exactly as written (formatting, comments, blank lines, multi-line `if` / `while` headers, label names). An unchanged chart gives back the original code byte for byte; editing one node changes one line of the diff (median on 5,242 real functions).
+- **Comments travel with their statement** (leading, end-of-line and end-of-block comments) and are editable in the node editor.
+- **Editable callback and nested function flows**: the edited body is written back into the statement that holds it; concise arrows stay concise.
+- **Complete state machine fallback**: `for`, `for…of` (with iterator closing), `for await`, `for…in`, destructuring, `class` declarations and `try / catch / finally` (protected-state table, resumed `return` / `throw` / jumps), with collision-free generated names.
+- Generated code uses the indentation of the source (tabs or N spaces).
+- Code preview badge **unchanged** when the chart was not modified.
+
+### Fixed
+- Re-indenting code (preview and *Apply to source*) no longer changes the content of multi-line template literals.
+- Named function expressions keep their own name (`x = function name() {}`).
+- Folded callback bodies in `return` statements were shifted in labels.
+- Guard clauses (`if (c) { …; continue; }`) keep their shape instead of moving the rest of the loop into an `else`; no more duplicated code when branches meet before a loop header.
+- `return` inside an infinite loop is no longer turned into `break` + `return`.
+- A statement containing `continue label` for an outer label is never reused verbatim when the outer loop is regenerated.
+
 ## [3.0.0] - 2026-11-04
 
 ### Added
