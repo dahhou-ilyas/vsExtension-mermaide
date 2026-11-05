@@ -3,6 +3,12 @@
 All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses [Semantic Versioning](https://semver.org/).
 
+## [3.2.0] - 2026-11-05
+
+### Added
+- The parameters of inline callbacks and nested functions can be edited on the start node of their flow; the function head is rewritten and an unchanged body is kept as written.
+- State machine fallback: block-scoped variables that would clash once flattened (same name in several blocks, catch parameters, a block shadowing a parameter or an outer name) are renamed in their scope instead of sharing one variable.
+
 ## [3.1.0] - 2026-11-05
 
 ### Added

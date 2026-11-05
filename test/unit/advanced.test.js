@@ -219,9 +219,11 @@ describe('inline callbacks', () => {
         assert.match(code1, /orders\.forEach\(\(order\) => \{\n\s+if \(order\.cancelled \|\| order\.amount < 0\) \{/, code1);
         assert.ok(code1.includes('fetch(') && code1.includes('.then('), 'untouched callbacks are kept as written');
         assert.doesNotThrow(() => deleteNode(graph, inner.id));
-        // The parameters of a callback belong to the parent statement.
+        // Parameters are edited on the start node of the callback flow; its name belongs to the parent.
         const callbackStart = graph.nodes.find((n) => n.unit === 1 && n.kind === 'start');
-        assert.throws(() => updateNode(graph, callbackStart.id, { params: 'x' }), GraphEditError);
+        const renamed = generateCode(updateNode(graph, callbackStart.id, { params: 'order, index' })).code;
+        assert.match(renamed, /orders\.forEach\(\(order, index\) => \{\n\s+if \(order\.cancelled\) return;/, renamed);
+        assert.throws(() => updateNode(graph, callbackStart.id, { name: 'x' }), GraphEditError);
         const callbackEdge = graph.edges.findIndex((e) => e.kind === 'callback');
         assert.throws(() => insertOnEdge(graph, callbackEdge, 'process'), GraphEditError);
 

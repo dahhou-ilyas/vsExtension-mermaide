@@ -48,8 +48,8 @@ function assertEditable(graph, node, { header = false } = {}) {
             ? 'This node belongs to a nested function. Edit its definition in the parent flow instead.'
             : 'This node belongs to an inline callback. Edit the statement that contains the callback instead.');
     }
-    if (header && node.kind === 'start') {
-        throw new GraphEditError('The parameters of an inline callback are part of the statement that contains it. Edit that statement to change them.');
+    if (header && node.kind === 'start' && header.name) {
+        throw new GraphEditError('The name of an embedded function belongs to the statement that defines it: only its parameters can be edited here.');
     }
 }
 
@@ -134,7 +134,8 @@ function prune(graph) {
 function updateNode(graph, id, changes) {
     let next = cloneGraph(graph);
     const node = findNode(next, id);
-    assertEditable(next, node, { header: true });
+    const changesName = changes.name !== undefined && changes.name.trim() !== ((node.meta && node.meta.name) || '');
+    assertEditable(next, node, { header: node.kind === 'start' ? { name: changesName } : false });
     node.meta = node.meta || {};
     switch (node.kind) {
         case 'start':

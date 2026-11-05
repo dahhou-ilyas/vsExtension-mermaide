@@ -24,7 +24,7 @@
 
 const { indexGraph, isNormalEdge, isEmbeddedUnit } = require('./graph');
 const { KEEP, templateLines } = require('./text');
-const { scanTopLevel, splitTopLevel, patternNames, parseDeclaration, parseForHeader, identifiers } = require('./lowering');
+const { scanTopLevel, splitTopLevel, patternNames, parseDeclaration, parseForHeader, identifiers, renameIdentifiers } = require('./lowering');
 
 class UnstructuredError extends Error {}
 
@@ -47,6 +47,25 @@ function hash(text) {
     h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
     h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
     return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(36);
+}
+
+/** The head of an inline function, up to its body: `async (a, b) => ` or `function name(a) `. */
+function callbackHead(meta) {
+    const asyncKw = meta.async ? 'async ' : '';
+    const params = (meta.params || '').trim();
+    const typeParams = meta.typeParameters || '';
+    const returnType = meta.returnType || '';
+    if (meta.isArrow && !meta.generator) return `${asyncKw}${typeParams}(${params})${returnType} => `;
+    const name = typeof meta.ownName === 'string' ? ` ${meta.ownName}` : '';
+    return `${asyncKw}function${meta.generator ? '*' : ''}${name}${typeParams}(${params})${returnType} `;
+}
+
+/** A copy of the graph where `start` has the given parameters (to compare bodies only). */
+function withParams(graph, start, params) {
+    return {
+        ...graph,
+        nodes: graph.nodes.map((n) => (n === start ? { ...n, meta: { ...n.meta, params } } : n))
+    };
 }
 
 /** Whitespace before `offset` on its line, when nothing else precedes it. */
@@ -327,26 +346,37 @@ class StructuredEmitter {
         this.graph.units.forEach((unit, index) => {
             const host = unit.host;
             if (!host || host.nodeId !== node.id || host.field !== field || host.line !== line || !unit.sig) return;
-            if (unitSignature(this.graph, index, this.unitSigs) === unit.sig) return;
-            edits.push({ unit, index, range: host.range });
+            const start = this.graph.nodes.find((n) => n.id === unit.startId);
+            const meta = (start && start.meta) || {};
+            // Parameters edited on the start node of the callback flow: the whole function is rewritten.
+            const header = !!host.fn && typeof host.params === 'string' && (meta.params || '') !== host.params;
+            let body = unitSignature(this.graph, index, this.unitSigs) !== unit.sig;
+            if (body && header) body = unitSignature(withParams(this.graph, start, host.params), index) !== unit.sig;
+            if (body || header) edits.push({ unit, index, meta, header, body, range: header ? host.fn : host.range });
         });
         if (!edits.length) return text;
         edits.sort((a, b) => b.range[0] - a.range[0]);
         let result = text;
         const base = (this.graph.source && node.start !== undefined && indentAt(this.graph.source, node.start)) || '';
         for (const edit of edits) {
+            const { host } = edit.unit;
             const [start, end] = edit.range;
             if (start < 0 || end > result.length || start > end) continue;
             const lineStart = result.lastIndexOf('\n', start - 1) + 1;
             const pad = lineStart === 0 ? base : result.slice(lineStart).match(/^[ \t]*/)[0];
+            let replacement;
             // `(x) => expression` stays concise while its flow is a single return.
-            const concise = edit.unit.host.expression ? singleReturn(this.graph, edit.index) : null;
-            if (concise !== null) {
-                result = `${result.slice(0, start)}${/^\s*\{/.test(concise) ? `(${concise})` : concise}${result.slice(end)}`;
-                continue;
+            const concise = host.expression && edit.body ? singleReturn(this.graph, edit.index) : null;
+            if (!edit.body) {
+                replacement = result.slice(host.range[0], host.range[1]);
+            } else if (concise !== null && (edit.meta.isArrow || !edit.header)) {
+                replacement = /^\s*\{/.test(concise) ? `(${concise})` : concise;
+            } else {
+                const lines = bodyLines(this.graph, edit.index, this.indentUnit).map((l) => indentLine(l, pad + this.indentUnit));
+                replacement = `{\n${lines.join('\n')}${lines.length ? '\n' : ''}${pad}}`;
             }
-            const lines = bodyLines(this.graph, edit.index, this.indentUnit).map((l) => indentLine(l, pad + this.indentUnit));
-            result = `${result.slice(0, start)}{\n${lines.join('\n')}${lines.length ? '\n' : ''}${pad}}${result.slice(end)}`;
+            if (edit.header) replacement = callbackHead(edit.meta) + replacement;
+            result = `${result.slice(0, start)}${replacement}${result.slice(end)}`;
         }
         return result;
     }
@@ -1349,16 +1379,74 @@ function stateMachine(graph, unitIndex, indentUnit) {
 
     const params = new Set(splitTopLevel(startMeta.params || '', ',').flatMap((p) => patternNames(p.replace(/^\s*\.\.\./, ''))));
     const hoisted = new Set();
-    const declaredBy = new Map();
-    const hoist = (names, id) => names.forEach((name) => {
+    const hoist = (names) => names.forEach((name) => {
         if (!params.has(name)) hoisted.add(name);
-        if (!declaredBy.has(name)) declaredBy.set(name, new Set());
-        declaredBy.get(name).add(id);
     });
+
+    // Block-scoped variables all become variables of the function: a declaration that would
+    // clash (same name in another block, a parameter, or a name used outside its block) is
+    // renamed in its scope, as compilers do when they flatten scopes.
+    const unitNodes = graph.nodes.filter((n) => n.unit === unitIndex);
+    const lexicalNames = (n) => {
+        const names = [];
+        const meta = n.meta || {};
+        if (n.kind === 'process' && !meta.declaration) {
+            for (const c of n.code || []) {
+                for (const statement of meta.multiline ? splitStatements(String(c)) : [c]) {
+                    const d = parseDeclaration(statement);
+                    if (d && d.kind !== 'var') d.declarators.forEach((x) => names.push(...x.names));
+                    const cls = /^\s*class\s+([A-Za-z_$][\w$]*)/.exec(statement);
+                    if (cls) names.push(cls[1]);
+                }
+            }
+        } else if (n.kind === 'loop' && meta.header) {
+            const h = parseForHeader(meta.header);
+            if (h && h.kind === 'for') {
+                const d = parseDeclaration(h.init);
+                if (d && d.kind !== 'var') d.declarators.forEach((x) => names.push(...x.names));
+            } else if (h && h.declaration && h.declaration !== 'var') names.push(...h.names);
+        } else if (n.kind === 'catch' && n.code[0]) {
+            names.push(...patternNames(n.code[0]));
+        }
+        return names;
+    };
+    const scopeOf = (n) => (n.lex && n.lex.length ? n.lex[n.lex.length - 1] : '');
+    const declaredIn = new Map();
+    for (const n of unitNodes) {
+        for (const name of lexicalNames(n)) {
+            if (!declaredIn.has(name)) declaredIn.set(name, new Set());
+            declaredIn.get(name).add(scopeOf(n));
+        }
+    }
+    const textsOf = (n) => [...(n.code || []), (n.meta && n.meta.header) || '', ...graph.edges.filter((e) => e.from === n.id && e.code).map((e) => e.code)];
+    const renames = new Map();
+    for (const [name, scopes] of declaredIn) {
+        for (const scope of scopes) {
+            if (!scope) continue;
+            const clash = scopes.size > 1 || params.has(name)
+                || unitNodes.some((n) => !(n.lex || []).includes(scope) && textsOf(n).some((t) => identifiers(t).has(name)));
+            if (clash) renames.set(`${scope}|${name}`, fresh(name));
+        }
+    }
+    const mappingCache = new Map();
+    const mappingFor = (id) => {
+        if (mappingCache.has(id)) return mappingCache.get(id);
+        const n = nodes.get(id) || graph.nodes.find((x) => x.id === id);
+        const mapping = new Map();
+        if (n && renames.size) {
+            for (const [name, scopes] of declaredIn) {
+                const binding = [...(n.lex || [])].reverse().find((scope) => scopes.has(scope));
+                if (binding && renames.has(`${binding}|${name}`)) mapping.set(name, renames.get(`${binding}|${name}`));
+            }
+        }
+        mappingCache.set(id, mapping);
+        return mapping;
+    };
+    const R = (id, text) => (typeof text === 'string' ? renameIdentifiers(text, mappingFor(id)) : text);
     const assign = (target, value) => (/^[A-Za-z_$][\w$]*$/.test(target) ? `${target} = ${value}` : `(${target} = ${value})`);
 
     /** A statement of the function as a statement of a `case`. */
-    const lower = (code, id) => {
+    const lower = (code) => {
         const text = String(code).trim();
         if (/^export\b/.test(text)) throw new Error('Exported declarations cannot be moved into a state machine. Restructure the diagram.');
         if (/^using\b|^await\s+using\b/.test(text)) throw new Error('`using` declarations cannot be moved into a state machine. Restructure the diagram.');
@@ -1366,7 +1454,7 @@ function stateMachine(graph, unitIndex, indentUnit) {
         if (declaration) {
             const parts = [];
             for (const d of declaration.declarators) {
-                hoist(d.names, id);
+                hoist(d.names);
                 if (d.init !== null) parts.push(assign(d.target, d.init));
                 else if (declaration.kind !== 'var') d.names.forEach((name) => parts.push(`${name} = undefined`));
             }
@@ -1374,7 +1462,7 @@ function stateMachine(graph, unitIndex, indentUnit) {
         }
         const cls = /^class\s+([A-Za-z_$][\w$]*)/.exec(text);
         if (cls) {
-            hoist([cls[1]], id);
+            hoist([cls[1]]);
             return `${cls[1]} = ${text.replace(/;$/, '')};`;
         }
         return text;
@@ -1420,7 +1508,7 @@ function stateMachine(graph, unitIndex, indentUnit) {
         const node = nodes.get(id);
         const subtype = node.meta && node.meta.subtype;
         if (node.kind !== 'loop' || !['for', 'forin', 'forof'].includes(subtype)) continue;
-        const header = parseForHeader(node.meta.header || '');
+        const header = parseForHeader(R(id, node.meta.header || ''));
         if (!header) throw new Error(`Cannot read the loop header "${node.meta.header}". Restructure the diagram.`);
         const entryEdge = (flow.out.get(id) || []).find((e) => isNormalEdge(e) && ['yes', 'next', 'true'].includes(e.label));
         const exitEdge = (flow.out.get(id) || []).find((e) => isNormalEdge(e) && ['no', 'done', 'false'].includes(e.label));
@@ -1434,7 +1522,7 @@ function stateMachine(graph, unitIndex, indentUnit) {
             loop.object = fresh('$object');
             loop.index = fresh('$index');
         }
-        if (header.kind !== 'for') hoist(header.names, id);
+        if (header.kind !== 'for') hoist(header.names);
         loops.set(id, loop);
     }
 
@@ -1499,7 +1587,7 @@ function stateMachine(graph, unitIndex, indentUnit) {
                     body.push(go(next(id), id));
                     break;
                 }
-                (node.code || []).flatMap((c) => (node.meta && node.meta.multiline ? splitStatements(String(c)) : [c])).forEach((c) => {
+                (node.code || []).map((c) => R(id, c)).flatMap((c) => (node.meta && node.meta.multiline ? splitStatements(String(c)) : [c])).forEach((c) => {
                     if (/^\s*(\/\/|\/\*)/.test(c) && !/\n/.test(String(c).trim())) body.push(String(c).trim());
                     else emit(lower(c, id));
                 });
@@ -1529,7 +1617,7 @@ function stateMachine(graph, unitIndex, indentUnit) {
                     : next(id), id));
                 break;
             case 'return': {
-                const text = String(node.code[0] || 'return').trim().replace(/;$/, '');
+                const text = String(R(id, node.code[0]) || 'return').trim().replace(/;$/, '');
                 const value = text.replace(/^return\b/, '').trim();
                 const viaFinally = (flow.out.get(id) || []).find((e) => e.kind === 'abrupt' && kindOf(e.to) === 'finally' && pending.has(e.to));
                 const closing = closeIterators(id, null);
@@ -1548,20 +1636,20 @@ function stateMachine(graph, unitIndex, indentUnit) {
                 break;
             }
             case 'throw':
-                emit(node.code[0] || 'throw new Error()');
+                emit(R(id, node.code[0]) || 'throw new Error()');
                 break;
             case 'decision':
                 if (node.meta && node.meta.subtype === 'switch') {
-                    body.push(`switch (${node.code[0]}) {`);
+                    body.push(`switch (${R(id, node.code[0])}) {`);
                     for (const edge of normal(id)) {
-                        if (edge.code !== undefined && edge.code !== null) body.push(`${indentUnit}case ${edge.code}: ${go(edge.to, id)}`);
+                        if (edge.code !== undefined && edge.code !== null) body.push(`${indentUnit}case ${R(id, edge.code)}: ${go(edge.to, id)}`);
                     }
                     const fallback = normal(id).find((e) => e.label === 'default' || e.label === 'no match');
                     body.push(`${indentUnit}default: ${go(fallback && fallback.to, id)}`);
                     body.push('}');
                     break;
                 }
-                body.push(`if (${node.code[0]}) { ${go(to(id, ['yes', 'true']), id)} }`);
+                body.push(`if (${R(id, node.code[0])}) { ${go(to(id, ['yes', 'true']), id)} }`);
                 body.push(go(to(id, ['no', 'false']), id));
                 break;
             case 'loop': {
@@ -1569,7 +1657,7 @@ function stateMachine(graph, unitIndex, indentUnit) {
                 const enter = to(id, ['yes', 'next', 'true']);
                 const leave = to(id, ['no', 'done', 'false']);
                 if (!loop) {
-                    body.push(`if (${node.code[0] || 'true'}) { ${go(enter, id)} }`);
+                    body.push(`if (${R(id, node.code[0]) || 'true'}) { ${go(enter, id)} }`);
                     body.push(go(leave, id));
                     break;
                 }
@@ -1652,9 +1740,8 @@ function stateMachine(graph, unitIndex, indentUnit) {
             states.forEach((state) => lines.push(`${pad(3)}case '${state}':`));
             const node = nodes.get(handler);
             if (node.kind === 'catch') {
-                const param = (node.code[0] || '').trim();
-                const names = patternNames(param);
-                hoist(names, handler);
+                const param = (R(handler, node.code[0]) || '').trim();
+                hoist(patternNames(param));
                 const bind = param ? `${withSemicolon(assign(param, ERROR))} ` : '';
                 lines.push(`${pad(4)}${bind}${S} = '${next(handler) && loops.has(next(handler)) ? `${next(handler)}:init` : next(handler)}'; continue ${FLOW};`);
             } else {
@@ -1670,11 +1757,10 @@ function stateMachine(graph, unitIndex, indentUnit) {
     const variables = [...hoisted, ...pending.values()];
     if (variables.length) lines.unshift(`let ${[...new Set(variables)].join(', ')};`);
 
-    for (const [name, sites] of declaredBy) {
-        if (sites.size > 1 || params.has(name)) {
-            warnings.push(`"${unit.name}": the variable "${name}" is declared in several places; the state machine uses one variable for all of them.`);
-        }
-    }
+    // Closures created in a loop see one shared variable instead of one per iteration.
+    const closureInLoop = [...loops.values()].some((l) => l.header.kind !== 'in'
+        && [...l.body].some((id) => (nodes.get(id).code || []).some((c) => /=>|\bfunction\b/.test(c))));
+    if (closureInLoop) warnings.push(`"${unit.name}": a function created inside a loop now shares the loop variables between iterations.`);
     return { lines, warnings };
 }
 
@@ -1862,7 +1948,11 @@ function dedent(text, indent) {
 function annotateSource(graph) {
     const cache = new Map();
     graph.units.forEach((unit, index) => {
-        if (isEmbeddedUnit(unit)) unit.sig = unitSignature(graph, index, cache);
+        if (!isEmbeddedUnit(unit)) return;
+        unit.sig = unitSignature(graph, index, cache);
+        const start = graph.nodes.find((n) => n.id === unit.startId);
+        // The parameters as written, to notice when they are edited.
+        if (unit.host && start && start.meta) unit.host.params = start.meta.params || '';
     });
     if (typeof graph.source !== 'string') return graph;
     const nodes = new Map(graph.nodes.map((n) => [n.id, n]));
